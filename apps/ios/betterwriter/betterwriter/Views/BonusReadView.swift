@@ -148,8 +148,8 @@ struct BonusReadView: View {
 
   /// Stream bonus reading content from server. The server decides the bonus dayIndex.
   @MainActor
-  private func loadBonusReading(retriedWithFreshSession: Bool = false) async {
-    // Check for an existing in-progress bonus entry
+  private func loadBonusReading(retried: Bool = false) async {
+    // Check for an existing in-progress bonus entry with content.
     if let existing = findInProgressBonusEntry() {
       managedEntry = existing
       if existing.readingBody != nil {
@@ -158,10 +158,8 @@ struct BonusReadView: View {
       }
     }
 
-    // Use a stable key for concurrency guard — use managedEntry's dayIndex if available,
-    // otherwise "bonus.new" for a fresh request.
-    let guardKey =
-      managedEntry.map { "stream.reading.\($0.dayIndex)" } ?? "stream.reading.bonus.new"
+    // Concurrency guard — one active bonus reading load at a time.
+    let guardKey = "stream.reading.bonus"
     let store = StreamSessionStore.shared
     guard store.beginLoad(key: guardKey) else { return }
     defer { store.endLoad(key: guardKey) }
@@ -175,91 +173,55 @@ struct BonusReadView: View {
     revealTask = nil
 
     do {
-      // For reconnection: check if we have an existing stream session for this entry
-      let sessionDayIndex = managedEntry?.dayIndex ?? -1
-      let existingSession =
-        sessionDayIndex >= 0 ? store.loadFreshReading(dayIndex: sessionDayIndex) : nil
-      var streamId = existingSession?.streamId ?? UUID().uuidString
-      var kickoffTask: Task<APIClient.StartStreamResponse, Error>?
-      var gotUsableStreamContent = false
+      // Step 1: POST — server decides what to do.
+      // No streamId sent; the server owns stream identity.
+      let kickoff = try await APIClient.shared.startReadingStream()
 
-      if existingSession == nil {
-        // Server computes the bonus dayIndex — we don't send one.
-        kickoffTask = Task {
-          try await APIClient.shared.startReadingStream(streamId: streamId)
+      if kickoff.mode == "completed", let completedEntry = kickoff.entry {
+        // Reading already generated — save and display without streaming.
+        let localEntry = findOrCreateLocalEntry(from: completedEntry)
+        localEntry.readingBody = completedEntry.readingBody ?? ""
+        managedEntry = localEntry
+        do { try modelContext.save() } catch {
+          print("BonusReadView: save completed entry failed: \(error)")
         }
+        isLoading = false
+        return
       }
 
+      // Step 2: GET — connect to the SSE stream.
       var completedEntry: APIClient.EntryResponse?
-      let readingEvents = await APIClient.shared.streamReading(
-        streamId: streamId,
-        lastEventId: nil
-      )
+      var gotUsableStreamContent = false
+
+      let readingEvents = await APIClient.shared.streamReading(lastEventId: nil)
       for try await event in readingEvents {
         switch event {
-        case .start(let eventId):
-          if let eventId, let entry = managedEntry {
-            store.updateReadingCursor(dayIndex: entry.dayIndex, eventId: eventId)
-          }
-        case .delta(let text, let eventId):
+        case .start:
+          break
+        case .delta(let text, _):
           streamedBody += text
           enqueueTypewriter(text)
           isLoading = false
           gotUsableStreamContent = true
-          if let eventId, let entry = managedEntry {
-            store.updateReadingCursor(dayIndex: entry.dayIndex, eventId: eventId)
-          }
-        case .complete(let entryResponse, let eventId):
+        case .complete(let entryResponse, _):
           completedEntry = entryResponse
-          if let eventId, let entry = managedEntry {
-            store.updateReadingCursor(dayIndex: entry.dayIndex, eventId: eventId)
-          }
-          if let entry = managedEntry {
-            store.clearReading(dayIndex: entry.dayIndex)
-          }
-        case .heartbeat(let eventId):
-          if let eventId, let entry = managedEntry {
-            store.updateReadingCursor(dayIndex: entry.dayIndex, eventId: eventId)
-          }
-        case .end(_, let eventId):
-          if let eventId, let entry = managedEntry {
-            store.updateReadingCursor(dayIndex: entry.dayIndex, eventId: eventId)
-          }
-          if let entry = managedEntry {
-            store.clearReading(dayIndex: entry.dayIndex)
-          }
-        case .error(let message, let eventId):
-          if let eventId, let entry = managedEntry {
-            store.updateReadingCursor(dayIndex: entry.dayIndex, eventId: eventId)
-          }
-          if let entry = managedEntry {
-            store.clearReading(dayIndex: entry.dayIndex)
-          }
+        case .heartbeat:
+          break
+        case .end:
+          break
+        case .error(let message, _):
           throw NSError(
-            domain: "BonusReadStream", code: 500, userInfo: [NSLocalizedDescriptionKey: message])
+            domain: "BonusReadStream", code: 500,
+            userInfo: [NSLocalizedDescriptionKey: message]
+          )
         }
       }
 
-      if let kickoffTask {
-        do {
-          let kickoffResponse = try await kickoffTask.value
-          if kickoffResponse.streamId != streamId {
-            streamId = kickoffResponse.streamId
-            if let entry = managedEntry {
-              store.saveReading(dayIndex: entry.dayIndex, streamId: streamId, lastEventId: nil)
-            }
-          }
-        } catch {
-          print("BonusReadView: stream kickoff failed: \(error)")
-        }
-      }
-
-      // Wait for any in-flight word-fade animation to finish
+      // Wait for any in-flight word-fade animation to finish.
       if let task = revealTask { await task.value }
 
       if let response = completedEntry {
-        // Server created the entry — create or update the local entry using
-        // the server-assigned dayIndex.
+        // Server created the entry with the bonus dayIndex.
         let localEntry = findOrCreateLocalEntry(from: response)
         localEntry.readingBody = response.readingBody ?? streamedBody
         managedEntry = localEntry
@@ -271,12 +233,10 @@ struct BonusReadView: View {
         do { try modelContext.save() } catch {
           print("BonusReadView: save streamed body failed: \(error)")
         }
-        store.clearReading(dayIndex: entry.dayIndex)
       } else {
         throw NSError(
-          domain: "BonusReadStream",
-          code: 500,
-          userInfo: [NSLocalizedDescriptionKey: "Reading stream did not return a completion event"]
+          domain: "BonusReadStream", code: 500,
+          userInfo: [NSLocalizedDescriptionKey: "Reading stream did not return content"]
         )
       }
 
@@ -284,12 +244,9 @@ struct BonusReadView: View {
       displayedText = ""
       isLoading = false
     } catch {
-      if !retriedWithFreshSession {
-        await loadBonusReading(retriedWithFreshSession: true)
+      if !retried {
+        await loadBonusReading(retried: true)
         return
-      }
-      if let entry = managedEntry {
-        store.clearReading(dayIndex: entry.dayIndex)
       }
       errorMessage = "Couldn't load the reading. Check your connection."
       isLoading = false

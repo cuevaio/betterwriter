@@ -24,7 +24,7 @@ export const syncPayloadSchema = z.object({
         isBonusReading: z.boolean().optional(),
         isFreeWrite: z.boolean().optional(),
         skipped: z.boolean().optional(),
-      }),
+      })
     )
     .optional(),
 });
@@ -48,10 +48,3 @@ export const userInputSchema = z.object({
   text: z.string().min(1),
 });
 export type UserInput = z.infer<typeof userInputSchema>;
-
-/** POST streaming endpoints payload — client only sends streamId.
- *  userId comes from JWT; dayIndex is computed server-side. */
-export const streamPayloadSchema = z.object({
-  streamId: z.string().min(1),
-});
-export type StreamPayload = z.infer<typeof streamPayloadSchema>;

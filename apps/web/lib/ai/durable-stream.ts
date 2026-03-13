@@ -25,7 +25,9 @@ export interface DurableStreamMeta {
   params: Record<string, unknown>;
 }
 
-const DEFAULT_TTL_SECONDS = Number(process.env.DURABLE_STREAM_TTL_SECONDS ?? 60 * 60 * 24);
+const DEFAULT_TTL_SECONDS = Number(
+  process.env.DURABLE_STREAM_TTL_SECONDS ?? 60 * 60 * 24
+);
 
 const keys = (streamId: string) => ({
   meta: `stream:meta:${streamId}`,
@@ -82,7 +84,7 @@ export async function getDurableStreamMeta(streamId: string) {
 export async function waitForDurableStreamMeta(
   streamId: string,
   timeoutMs = 2000,
-  pollMs = 100,
+  pollMs = 100
 ) {
   const startedAt = Date.now();
 
@@ -96,12 +98,15 @@ export async function waitForDurableStreamMeta(
   return null;
 }
 
-export async function listDurableEventsSince(streamId: string, lastEventId: number) {
+export async function listDurableEventsSince(
+  streamId: string,
+  lastEventId: number
+) {
   const next = await redis.zrange<DurableEventFrame[]>(
     keys(streamId).events,
     `(${lastEventId}`,
     "+inf",
-    { byScore: true },
+    { byScore: true }
   );
   return next.sort((a, b) => a.id - b.id);
 }
@@ -109,22 +114,29 @@ export async function listDurableEventsSince(streamId: string, lastEventId: numb
 export async function emitDurableEvent<T>(
   streamId: string,
   event: DurableEventName,
-  data: T,
+  data: T
 ) {
   const now = Date.now();
   const k = keys(streamId);
 
   // Get the sequence ID first — we need it to build the frame before writing.
   const id = await redis.incr(k.seq);
-  const frame: DurableEventFrame<T> = { id, streamId, event, data, timestamp: now };
+  const frame: DurableEventFrame<T> = {
+    id,
+    streamId,
+    event,
+    data,
+    timestamp: now,
+  };
 
-  if (event === "delta" || event === "heartbeat") {
+  if (event === "delta") {
     // Hot path: just write the event. Skip per-delta TTL refresh (set once on init).
     await redis.zadd(k.events, { score: id, member: frame });
     return frame;
   }
 
-  // Non-delta path (start, complete, error): pipeline zadd + TTL refreshes + meta update.
+  // Heartbeat + non-delta path: pipeline zadd + TTL refreshes + meta update (updatedAt).
+  // Heartbeat updates meta.updatedAt so resolveActiveStream can detect stale/crashed streams.
   const meta = await redis.get<DurableStreamMeta>(k.meta);
   const status =
     event === "complete"
@@ -138,9 +150,13 @@ export async function emitDurableEvent<T>(
   p.expire(k.events, ttlSeconds());
   p.expire(k.seq, ttlSeconds());
   if (meta) {
-    p.set(k.meta, { ...meta, status, updatedAt: now } satisfies DurableStreamMeta, {
-      ex: ttlSeconds(),
-    });
+    p.set(
+      k.meta,
+      { ...meta, status, updatedAt: now } satisfies DurableStreamMeta,
+      {
+        ex: ttlSeconds(),
+      }
+    );
   }
   await p.exec();
 
@@ -155,12 +171,13 @@ export function parseCursor(value: string | null | undefined) {
 
 // ---------------------------------------------------------------------------
 // Entity-level dedup lock
-// Keyed on (userId, kind, dayIndex) — prevents concurrent generation for the
-// same entity even when different streamIds are used.
+// Keyed on (userId, kind) — one active stream per user per kind.
+// The lock is NOT released on successful completion; it stays until TTL or
+// a new generation claims it. This lets GET always find the active stream.
 // ---------------------------------------------------------------------------
 
-const entityLockKey = (userId: string, kind: string, dayIndex: number) =>
-  `stream:active:${userId}:${kind}:${dayIndex}`;
+const entityLockKey = (userId: string, kind: string) =>
+  `stream:active:${userId}:${kind}`;
 
 /**
  * Try to acquire an entity lock. Returns `{ acquired: true }` if this caller
@@ -170,12 +187,14 @@ const entityLockKey = (userId: string, kind: string, dayIndex: number) =>
 export async function acquireEntityLock(
   userId: string,
   kind: string,
-  dayIndex: number,
   streamId: string,
-  lockTtlSeconds = 300,
+  lockTtlSeconds = ttlSeconds()
 ): Promise<{ acquired: boolean; activeStreamId: string }> {
-  const key = entityLockKey(userId, kind, dayIndex);
-  const wasSet = await redis.set(key, streamId, { ex: lockTtlSeconds, nx: true });
+  const key = entityLockKey(userId, kind);
+  const wasSet = await redis.set(key, streamId, {
+    ex: lockTtlSeconds,
+    nx: true,
+  });
   if (wasSet) {
     return { acquired: true, activeStreamId: streamId };
   }
@@ -185,25 +204,84 @@ export async function acquireEntityLock(
 
 /**
  * Release the entity lock, but only if we still own it (compare-and-delete).
- * Uses a Lua script for atomicity.
+ * Uses a Lua script for atomicity. Only called on generation error.
  */
 export async function releaseEntityLock(
   userId: string,
   kind: string,
-  dayIndex: number,
-  streamId: string,
+  streamId: string
 ): Promise<void> {
-  const key = entityLockKey(userId, kind, dayIndex);
+  const key = entityLockKey(userId, kind);
   await redis.eval(
     `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`,
     [key],
-    [streamId],
+    [streamId]
   );
 }
 
 /**
+ * Look up the active streamId for a user+kind without acquiring the lock.
+ */
+export async function getActiveStreamId(
+  userId: string,
+  kind: "reading" | "prompt"
+): Promise<string | null> {
+  return redis.get<string>(entityLockKey(userId, kind));
+}
+
+// How long without a heartbeat before we consider a running stream stale
+// (indicates server crash / unclean shutdown).
+const STALE_RUNNING_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Resolve the active stream for a user+kind, validating that it is still alive.
+ * Cleans up stale/errored locks automatically.
+ *
+ * Returns null if:
+ * - No active lock exists
+ * - Lock exists but stream meta has expired (TTL lapsed)
+ * - Stream errored
+ * - Stream is "running" but updatedAt is older than STALE_RUNNING_MS (server crash)
+ *
+ * Returns { streamId, meta } for running or completed streams.
+ */
+export async function resolveActiveStream(
+  userId: string,
+  kind: "reading" | "prompt"
+): Promise<{ streamId: string; meta: DurableStreamMeta } | null> {
+  const streamId = await getActiveStreamId(userId, kind);
+  if (!streamId) return null;
+
+  const meta = await getDurableStreamMeta(streamId);
+
+  if (!meta) {
+    // Lock exists but stream data expired — clean up stale lock.
+    await redis.del(entityLockKey(userId, kind));
+    return null;
+  }
+
+  if (meta.status === "errored") {
+    // Previous generation errored — clean up so next POST starts fresh.
+    await redis.del(entityLockKey(userId, kind));
+    return null;
+  }
+
+  if (meta.status === "running") {
+    const staleCutoff = Date.now() - STALE_RUNNING_MS;
+    if (meta.updatedAt < staleCutoff) {
+      // Stream appears stuck (server crash / no heartbeat for 10+ min).
+      await redis.del(entityLockKey(userId, kind));
+      return null;
+    }
+  }
+
+  return { streamId, meta };
+}
+
+/**
  * Create a heartbeat that periodically emits heartbeat events for a durable stream.
- * Keeps SSE connections alive and signals the stream is still active.
+ * Keeps SSE connections alive, signals the stream is still active, and refreshes
+ * meta.updatedAt so resolveActiveStream can detect crashed/stale streams.
  */
 export function createHeartbeat(streamId: string, intervalMs = 5000) {
   let active = false;

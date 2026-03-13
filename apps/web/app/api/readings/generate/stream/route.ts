@@ -4,20 +4,31 @@ import {
   acquireEntityLock,
   createHeartbeat,
   emitDurableEvent,
+  getActiveStreamId,
   initDurableStream,
   releaseEntityLock,
+  resolveActiveStream,
 } from "@/lib/ai/durable-stream";
 import { generateReadingStream } from "@/lib/ai/reading";
 import { createDurableSSEResponse } from "@/lib/api/durable-sse";
-import { streamPayloadSchema } from "@/lib/api/schemas";
 import { requireUserId } from "@/lib/auth";
 import { getCurrentDayIndex, getNextBonusDayIndex } from "@/lib/day-index";
 import { db } from "@/lib/db";
 import { entries, users } from "@/lib/db/schema";
 
-// GET /api/readings/generate/stream?streamId=... — Replay + live durable SSE stream
+// GET /api/readings/generate/stream — Replay + live durable SSE stream.
+// The server looks up the active streamId for this user so the client
+// does not need to track or send it.
 export async function GET(request: Request) {
-  return createDurableSSEResponse(request);
+  const userId = await requireUserId(request);
+  const streamId = await getActiveStreamId(userId, "reading");
+  if (!streamId) {
+    return Response.json(
+      { error: "No active reading stream" },
+      { status: 404 }
+    );
+  }
+  return createDurableSSEResponse(request, streamId);
 }
 
 interface ReadingGenerationPayload {
@@ -102,6 +113,7 @@ async function runReadingGeneration(payload: ReadingGenerationPayload) {
         message: "User not found",
         streamId,
       });
+      await releaseEntityLock(userId, "reading", streamId);
       return;
     }
 
@@ -144,7 +156,8 @@ async function runReadingGeneration(payload: ReadingGenerationPayload) {
 
     await heartbeat.stop();
     await emitDurableEvent(streamId, "complete", completionPayload);
-    await releaseEntityLock(userId, "reading", dayIndex, streamId);
+    // NOTE: entity lock is intentionally NOT released on success.
+    // It stays alive (TTL 24h) so GET can always find the active/completed stream.
   } catch (error) {
     await heartbeat.stop();
     await emitDurableEvent(streamId, "error", {
@@ -152,98 +165,143 @@ async function runReadingGeneration(payload: ReadingGenerationPayload) {
         error instanceof Error ? error.message : "Failed to stream reading",
       streamId,
     });
-    await releaseEntityLock(userId, "reading", dayIndex, streamId);
+    // Release lock on error so the next POST can start a fresh generation.
+    await releaseEntityLock(userId, "reading", streamId);
     throw error;
   }
 }
 
 const { POST: workflowPOST } = serve(async (workflow) => {
   await workflow.run("reading-generation", async () => {
-    const raw = workflow.requestPayload as { userId: string; streamId: string };
-    const { dayIndex, isBonusReading, currentDayIndex } =
-      await resolveReadingDayIndex(raw.userId);
-    await runReadingGeneration({
-      ...raw,
-      dayIndex,
-      isBonusReading,
-      currentDayIndex,
-    });
+    // dayIndex, isBonusReading, and currentDayIndex are pre-resolved and included
+    // in the payload so the workflow step doesn't need to re-query the DB.
+    const payload = workflow.requestPayload as ReadingGenerationPayload;
+    await runReadingGeneration(payload);
   });
 });
 
-// POST /api/readings/generate/stream — Kick off durable reading generation
+// POST /api/readings/generate/stream — Kick off durable reading generation.
+// The client sends no body; the server owns stream identity.
 export async function POST(request: Request) {
   const hasQstashSignature = Boolean(request.headers.get("upstash-signature"));
   const hasQstashSigningKeys =
     Boolean(process.env.QSTASH_CURRENT_SIGNING_KEY) ||
     Boolean(process.env.QSTASH_NEXT_SIGNING_KEY);
 
-  if (
-    process.env.NODE_ENV !== "production" &&
-    hasQstashSigningKeys &&
-    !hasQstashSignature
-  ) {
-    // Direct-dev path: userId comes from JWT, not from body
-    const userId = await requireUserId(request);
+  // QStash callback: pass directly to the workflow handler.
+  if (hasQstashSignature) {
+    return workflowPOST(request);
+  }
 
-    const parsed = streamPayloadSchema.safeParse(await request.json());
-    if (!parsed.success) {
+  // All user-initiated requests (both dev and production initial call):
+  const userId = await requireUserId(request);
+
+  // Step 1: Check for an existing active stream for this user.
+  const active = await resolveActiveStream(userId, "reading");
+  if (active) {
+    if (active.meta.status === "running") {
       return Response.json(
-        { error: "Invalid request", details: parsed.error.flatten() },
-        { status: 400 }
-      );
-    }
-    const { streamId } = parsed.data;
-
-    // Server determines whether this is a normal or bonus reading
-    const { dayIndex, isBonusReading, currentDayIndex } =
-      await resolveReadingDayIndex(userId);
-    const payload: ReadingGenerationPayload = {
-      userId,
-      dayIndex,
-      streamId,
-      isBonusReading,
-      currentDayIndex,
-    };
-
-    // Check entity lock — if a generation is already running for this (user, kind, dayIndex),
-    // return the active streamId so the client can connect to it instead.
-    const { acquired, activeStreamId } = await acquireEntityLock(
-      userId,
-      "reading",
-      dayIndex,
-      streamId
-    );
-
-    if (!acquired) {
-      return Response.json(
-        { ok: true, mode: "already-running", streamId: activeStreamId },
+        { ok: true, mode: "already-running" },
         { status: 200 }
       );
     }
+    if (active.meta.status === "completed") {
+      // Stream completed — fetch the entry from DB and return it directly.
+      const dayIndex = active.meta.params.dayIndex as number;
+      const rows = await db
+        .select()
+        .from(entries)
+        .where(and(eq(entries.userId, userId), eq(entries.dayIndex, dayIndex)))
+        .limit(1);
+      if (rows.length > 0 && rows[0].readingBody !== null) {
+        return Response.json(
+          {
+            ok: true,
+            mode: "completed",
+            entry: {
+              id: rows[0].id,
+              userId: rows[0].userId,
+              dayIndex: rows[0].dayIndex,
+              calendarDate: rows[0].calendarDate,
+              readingBody: rows[0].readingBody,
+              isBonusReading: rows[0].isBonusReading ?? false,
+              writingPrompt: rows[0].writingPrompt ?? null,
+              writingText: rows[0].writingText ?? null,
+              writingWordCount: rows[0].writingWordCount ?? null,
+            },
+          },
+          { status: 200 }
+        );
+      }
+      // Weird state: stream completed but DB has no data. Clear lock and proceed.
+      await releaseEntityLock(userId, "reading", active.streamId);
+    }
+  }
 
-    void runReadingGeneration(payload).catch((error) => {
-      console.error("Direct-dev reading stream failed", { streamId, error });
-    });
+  // Step 2: Check if reading already exists in DB for the resolved day.
+  const { dayIndex, isBonusReading, currentDayIndex } =
+    await resolveReadingDayIndex(userId);
+  const existingRows = await db
+    .select()
+    .from(entries)
+    .where(and(eq(entries.userId, userId), eq(entries.dayIndex, dayIndex)))
+    .limit(1);
 
+  if (existingRows.length > 0 && existingRows[0].readingBody !== null) {
     return Response.json(
-      { ok: true, mode: "direct-dev", streamId },
-      { status: 202 }
+      {
+        ok: true,
+        mode: "completed",
+        entry: {
+          id: existingRows[0].id,
+          userId: existingRows[0].userId,
+          dayIndex: existingRows[0].dayIndex,
+          calendarDate: existingRows[0].calendarDate,
+          readingBody: existingRows[0].readingBody,
+          isBonusReading: existingRows[0].isBonusReading ?? false,
+          writingPrompt: existingRows[0].writingPrompt ?? null,
+          writingText: existingRows[0].writingText ?? null,
+          writingWordCount: existingRows[0].writingWordCount ?? null,
+        },
+      },
+      { status: 200 }
     );
   }
 
-  // Workflow path (production / QStash): inject userId into the body so
-  // workflow.requestPayload contains it for the background worker.
-  if (!hasQstashSignature) {
-    const userId = await requireUserId(request);
-    const body = await request.json();
-    const enrichedRequest = new Request(request.url, {
-      method: request.method,
-      headers: request.headers,
-      body: JSON.stringify({ ...body, userId }),
-    });
-    return workflowPOST(enrichedRequest);
+  // Step 3: Start a new generation. Server generates the streamId.
+  const streamId = crypto.randomUUID();
+  const { acquired } = await acquireEntityLock(userId, "reading", streamId);
+
+  if (!acquired) {
+    // Lost a race with a concurrent request — the other request won the lock.
+    return Response.json(
+      { ok: true, mode: "already-running" },
+      { status: 200 }
+    );
   }
 
-  return workflowPOST(request);
+  const payload: ReadingGenerationPayload = {
+    userId,
+    dayIndex,
+    streamId,
+    isBonusReading,
+    currentDayIndex,
+  };
+
+  if (process.env.NODE_ENV !== "production" && hasQstashSigningKeys) {
+    // Direct-dev path: run in-process as a fire-and-forget.
+    void runReadingGeneration(payload).catch((error) => {
+      console.error("Direct-dev reading stream failed", { streamId, error });
+    });
+    return Response.json({ ok: true, mode: "started" }, { status: 202 });
+  }
+
+  // Production path: dispatch via Upstash Workflow (QStash).
+  // All payload fields are included so the workflow step doesn't re-query.
+  const enrichedRequest = new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: JSON.stringify(payload),
+  });
+  return workflowPOST(enrichedRequest);
 }

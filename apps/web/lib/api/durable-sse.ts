@@ -1,20 +1,27 @@
-import { requireUserId } from "@/lib/auth";
-import { sseHeaders, writeSSE, writeSSEComment } from "@/lib/ai/streaming";
 import {
   getDurableStreamMeta,
   listDurableEventsSince,
   parseCursor,
   waitForDurableStreamMeta,
 } from "@/lib/ai/durable-stream";
+import { sseHeaders, writeSSE, writeSSEComment } from "@/lib/ai/streaming";
+import { requireUserId } from "@/lib/auth";
 
 /**
  * Create a durable SSE response that replays past events and live-tails new ones.
  * Shared by both the readings and prompts stream GET handlers.
+ *
+ * @param resolvedStreamId - If provided, use this streamId directly instead of reading
+ *   it from the query params. Route handlers that look up the active stream server-side
+ *   should pass it here.
  */
-export async function createDurableSSEResponse(request: Request): Promise<Response> {
+export async function createDurableSSEResponse(
+  request: Request,
+  resolvedStreamId?: string
+): Promise<Response> {
   const userId = await requireUserId(request);
   const { searchParams } = new URL(request.url);
-  const streamId = searchParams.get("streamId");
+  const streamId = resolvedStreamId ?? searchParams.get("streamId");
 
   if (!streamId) {
     return new Response(JSON.stringify({ error: "streamId is required" }), {
@@ -24,7 +31,7 @@ export async function createDurableSSEResponse(request: Request): Promise<Respon
   }
 
   const cursor = parseCursor(
-    request.headers.get("Last-Event-ID") ?? searchParams.get("cursor"),
+    request.headers.get("Last-Event-ID") ?? searchParams.get("cursor")
   );
   let cancelled = false;
 
@@ -37,7 +44,7 @@ export async function createDurableSSEResponse(request: Request): Promise<Respon
       const send = (
         id: number,
         event: "start" | "delta" | "complete" | "error" | "heartbeat",
-        data: unknown,
+        data: unknown
       ) => {
         if (id <= lastSent || closed) return;
         lastSent = id;
@@ -60,7 +67,10 @@ export async function createDurableSSEResponse(request: Request): Promise<Respon
       if (cancelled || closed) return;
 
       if (!meta) {
-        writeSSE(controller, "error", { message: "stream not found", streamId });
+        writeSSE(controller, "error", {
+          message: "stream not found",
+          streamId,
+        });
         controller.close();
         return;
       }
@@ -109,16 +119,13 @@ export async function createDurableSSEResponse(request: Request): Promise<Respon
             latestMeta?.status === "errored"
           ) {
             sendEnd(
-              latestMeta.status === "completed" ? "completed" : "errored",
+              latestMeta.status === "completed" ? "completed" : "errored"
             );
             return;
           }
         }
 
-        const delay = Math.min(
-          MIN_POLL_MS * Math.pow(1.5, idleCount),
-          MAX_POLL_MS,
-        );
+        const delay = Math.min(MIN_POLL_MS * 1.5 ** idleCount, MAX_POLL_MS);
         await sleep(delay);
       }
     },

@@ -3,8 +3,6 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:3000}"
 DEVICE_ID="${DEVICE_ID:-dev-user-123}"
-DAY_INDEX="${DAY_INDEX:-2}"
-ABOUT_DAY_INDEX="${ABOUT_DAY_INDEX:-}"
 POST_MAX_TIME="${POST_MAX_TIME:-90}"
 STREAM_WAIT_SECS="${STREAM_WAIT_SECS:-120}"
 
@@ -27,30 +25,44 @@ fi
 echo "Token obtained successfully."
 echo ""
 
-make_stream_id() {
-  if command -v uuidgen >/dev/null 2>&1; then
-    echo "stream-$(uuidgen | tr '[:upper:]' '[:lower:]')"
-  else
-    echo "stream-$(date +%s)-$RANDOM"
-  fi
-}
-
 run_test() {
   local kind="$1"
-  local stream_id
-  stream_id="$(make_stream_id)"
 
   echo ""
   echo "== Testing /api/$kind/generate/stream =="
-  echo "streamId: $stream_id"
 
   local sse_log trigger_log
   sse_log="$(mktemp)"
   trigger_log="$(mktemp)"
 
+  # Step 1: POST — server owns stream identity, no streamId in body.
+  curl -sS --max-time "$POST_MAX_TIME" -X POST \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $TOKEN" \
+    -d "{}" \
+    "$BASE_URL/api/$kind/generate/stream" \
+    >"$trigger_log" 2>&1 || true
+
+  echo "-- Trigger response --"
+  cat "$trigger_log"
+  echo ""
+
+  # Check if the reading/prompt is already completed (no streaming needed).
+  local mode
+  mode="$(python3 -c "import sys,json; print(json.load(sys.stdin).get('mode',''))" <"$trigger_log" 2>/dev/null || true)"
+
+  if [ "$mode" = "completed" ]; then
+    echo "Mode: completed (data returned directly, no SSE needed)"
+    rm -f "$sse_log" "$trigger_log"
+    return
+  fi
+
+  echo "Mode: $mode"
+
+  # Step 2: GET — no streamId query param; server looks up the active stream.
   curl -N -sS \
     -H "Authorization: Bearer $TOKEN" \
-    "$BASE_URL/api/$kind/generate/stream?streamId=$stream_id" \
+    "$BASE_URL/api/$kind/generate/stream" \
     >"$sse_log" 2>&1 &
   local sse_pid=$!
 
@@ -64,28 +76,6 @@ run_test() {
   done &
   local monitor_pid=$!
 
-  sleep 1
-
-  local body
-  if [ "$kind" = "prompts" ]; then
-    local resolved_about_day_index
-    if [ -n "$ABOUT_DAY_INDEX" ]; then
-      resolved_about_day_index="$ABOUT_DAY_INDEX"
-    else
-      resolved_about_day_index=$((DAY_INDEX > 0 ? DAY_INDEX - 1 : 0))
-    fi
-    body="{\"dayIndex\":$DAY_INDEX,\"aboutDayIndex\":$resolved_about_day_index,\"streamId\":\"$stream_id\"}"
-  else
-    body="{\"dayIndex\":$DAY_INDEX,\"streamId\":\"$stream_id\"}"
-  fi
-
-  curl -sS --max-time "$POST_MAX_TIME" -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $TOKEN" \
-    -d "$body" \
-    "$BASE_URL/api/$kind/generate/stream" \
-    >"$trigger_log" 2>&1 || true
-
   local deadline=$((SECONDS + STREAM_WAIT_SECS))
   while (( SECONDS < deadline )); do
     if grep -Eq '^event: (complete|error)$' "$sse_log"; then
@@ -98,10 +88,6 @@ run_test() {
   wait "$sse_pid" 2>/dev/null || true
   kill "$monitor_pid" >/dev/null 2>&1 || true
   wait "$monitor_pid" 2>/dev/null || true
-
-  echo "-- Trigger response --"
-  cat "$trigger_log"
-  echo ""
 
   local delta_count terminal_count
   delta_count="$(grep -Ec '^event: delta$' "$sse_log" || true)"
