@@ -1,11 +1,11 @@
 import { streamText } from "ai";
 import { searchExa } from "@/lib/exa";
-import { aiModel, retrieveMemoryContext, withMemorySystem } from "./mem0";
 import {
-  READING_CURATION_PROMPT,
-  READING_FALLBACK_PROMPT,
   DAY_0_WELCOME_TEXT,
+  readingCurationPrompt,
+  readingFallbackPrompt,
 } from "./constants";
+import { aiModel, retrieveMemoryContext, withMemorySystem } from "./mem0";
 import { streamConstant } from "./stream-utils";
 
 interface GeneratedReading {
@@ -23,14 +23,12 @@ interface ExaPickedSource {
  */
 export async function generateReading(
   userId: string,
-  dayIndex: number,
+  dayIndex: number
 ): Promise<GeneratedReading> {
   return generateReadingStream(userId, dayIndex, async () => {});
 }
 
-async function pickExaSource(
-  topic: string,
-): Promise<ExaPickedSource> {
+async function pickExaSource(topic: string): Promise<ExaPickedSource> {
   const query = `${topic} essay interesting perspective thought-provoking`;
   const results = await searchExa(query, { numResults: 5 });
 
@@ -46,15 +44,33 @@ async function pickExaSource(
   };
 }
 
+/**
+ * Returns the word count range for a given day index.
+ * Word count increases by 100 every 7 completed app days (one "week").
+ * Week 1 (days 0–6): 200–300 words
+ * Week 2 (days 7–13): 300–400 words
+ * Week N: (100N+100)–(100N+200) words
+ */
+function getWordCountRange(dayIndex: number): { min: number; max: number } {
+  const weekNumber = Math.floor(dayIndex / 7) + 1;
+  return {
+    min: 200 + (weekNumber - 1) * 100,
+    max: 300 + (weekNumber - 1) * 100,
+  };
+}
+
 export async function generateReadingStream(
   userId: string,
   dayIndex: number,
   onDelta: (delta: string) => void | Promise<void>,
+  weekDayIndex?: number
 ): Promise<GeneratedReading> {
   if (dayIndex === 0) {
     await streamConstant(DAY_0_WELCOME_TEXT.body, onDelta);
     return { body: DAY_0_WELCOME_TEXT.body };
   }
+
+  const { min, max } = getWordCountRange(weekDayIndex ?? dayIndex);
 
   // Use memory context to determine a good topic
   const memoryContext = await retrieveMemoryContext(
@@ -73,7 +89,10 @@ export async function generateReadingStream(
     sourceTitle = picked.title;
     sourceText = picked.text;
   } catch (error) {
-    console.error("Reading stream: Exa source lookup failed, using original generation", error);
+    console.error(
+      "Reading stream: Exa source lookup failed, using original generation",
+      error
+    );
   }
 
   const streamPrompt = sourceText
@@ -82,19 +101,21 @@ Source title: ${sourceTitle}
 Source text:
 ${sourceText}
 
-Write a curated passage. Start with a bold title line (**Title**), then a blank line, then the body (400-600 words).`
+Write a curated passage. Start with a bold title line (**Title**), then a blank line, then the body (${min}-${max} words).`
     : `Write an original, thought-provoking passage about: ${topic}
 
-Start with a bold title line (**Title**), then a blank line, then the body (400-600 words).`;
+Start with a bold title line (**Title**), then a blank line, then the body (${min}-${max} words).`;
 
   const bodyResult = streamText({
     model: aiModel(userId),
     system: withMemorySystem(
-      sourceText ? READING_CURATION_PROMPT : READING_FALLBACK_PROMPT,
+      sourceText
+        ? readingCurationPrompt(min, max)
+        : readingFallbackPrompt(min, max),
       memoryContext
     ),
     prompt: streamPrompt,
-    maxOutputTokens: 1200,
+    maxOutputTokens: Math.max(1200, max * 2),
   });
 
   let body = "";

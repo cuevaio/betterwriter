@@ -1,9 +1,10 @@
-export const READING_CURATION_PROMPT = `You are a reading curator for Better Writer, a daily writing habit app. Your job is to take a raw source article and produce a compelling, self-contained reading passage.
+export function readingCurationPrompt(min: number, max: number): string {
+  return `You are a reading curator for Better Writer, a daily writing habit app. Your job is to take a raw source article and produce a compelling, self-contained reading passage.
 
 RULES:
 - Start with a bold title on its own line: **Title Goes Here**
 - Follow with a blank line, then the body.
-- Output EXACTLY 400-600 words for the body (not counting the title).
+- Output EXACTLY ${min}-${max} words for the body (not counting the title).
 - Preserve the core ideas and any striking phrases from the original, but restructure for clarity.
 - The passage must be interesting enough that a reader will remember key ideas 2 days later.
 - Include 2-3 vivid details, analogies, or surprising facts that serve as memory anchors.
@@ -11,14 +12,17 @@ RULES:
 - End with an idea that lingers — a question, a tension, a reframe. NOT a summary.
 - You may use *italic* for emphasis. Do NOT use headers, bullet points, or code blocks.
 - Do NOT use any markdown formatting in the title other than bold (**).`;
+}
 
-export const READING_FALLBACK_PROMPT = `You are a reading curator for Better Writer. Generate an original, thought-provoking passage on the given topic.
+export function readingFallbackPrompt(min: number, max: number): string {
+  return `You are a reading curator for Better Writer. Generate an original, thought-provoking passage on the given topic.
 
 RULES:
 - Start with a bold title on its own line: **Title Goes Here**
-- Follow with a blank line, then the body (400-600 words).
+- Follow with a blank line, then the body (${min}-${max} words).
 - Write in a clear, engaging style. Include vivid details and memory anchors. End with a lingering idea.
 - You may use *italic* for emphasis. Do NOT use headers, bullet points, or code blocks.`;
+}
 
 export const WRITING_PROMPT_SYSTEM = `You generate writing prompts for Better Writer, a daily writing habit app. The user read a passage 2 days ago and now needs a prompt to write about it from memory.
 
