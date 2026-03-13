@@ -7,7 +7,7 @@ export default function Home() {
         flexDirection: "column",
         justifyContent: "center",
         alignItems: "center",
-        padding: "48px 24px",
+        padding: "48px 24px 80px",
         maxWidth: 640,
         margin: "0 auto",
       }}
@@ -74,9 +74,21 @@ export default function Home() {
           marginBottom: 64,
         }}
       >
-        <Step number={1} title="Read" description="A curated text, chosen for you. A few minutes." />
-        <Step number={2} title="Write" description="Two days later, write what stuck. In your own words." />
-        <Step number={3} title="Repeat" description="That's the whole app. Show up, and ideas compound." />
+        <Step
+          number={1}
+          title="Read"
+          description="A curated text, chosen for you. A few minutes."
+        />
+        <Step
+          number={2}
+          title="Write"
+          description="Two days later, write what stuck. In your own words."
+        />
+        <Step
+          number={3}
+          title="Repeat"
+          description="That's the whole app. Show up, and ideas compound."
+        />
       </div>
 
       <a
@@ -95,6 +107,50 @@ export default function Home() {
       >
         Coming Soon
       </a>
+
+      <footer
+        style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          display: "flex",
+          justifyContent: "center",
+          gap: 24,
+          padding: "16px 24px",
+        }}
+      >
+        <a
+          href="/privacy"
+          style={{
+            fontSize: "0.75rem",
+            color: "var(--secondary)",
+            textDecoration: "none",
+          }}
+        >
+          Privacy
+        </a>
+        <a
+          href="/terms"
+          style={{
+            fontSize: "0.75rem",
+            color: "var(--secondary)",
+            textDecoration: "none",
+          }}
+        >
+          Terms
+        </a>
+        <a
+          href="/support"
+          style={{
+            fontSize: "0.75rem",
+            color: "var(--secondary)",
+            textDecoration: "none",
+          }}
+        >
+          Support
+        </a>
+      </footer>
     </main>
   );
 }
