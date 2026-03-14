@@ -17,5 +17,7 @@
 	</dict>
 	<key>UILaunchScreen</key>
 	<false/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>
