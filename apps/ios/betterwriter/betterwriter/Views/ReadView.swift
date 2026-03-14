@@ -198,7 +198,9 @@ struct ReadView: View {
     let localEntry = entry ?? DayEntry(dayIndex: dayIndex)
     localEntry.readingBody = body
     if entry == nil { modelContext.insert(localEntry) }
-    try? modelContext.save()
+    do { try modelContext.save() } catch {
+      print("ReadView: Failed to save reading locally: \(error)")
+    }
   }
 
   @MainActor
@@ -206,7 +208,9 @@ struct ReadView: View {
     guard let entry = entry else { return }
     entry.readingCompleted = true
     entry.needsSync = true
-    try? modelContext.save()
+    do { try modelContext.save() } catch {
+      print("ReadView: Failed to save reading completion: \(error)")
+    }
 
     Haptics.medium()
 

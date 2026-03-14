@@ -11,6 +11,8 @@ actor APIClient {
     private let baseURL = "https://betterwriter.vercel.app"
   #endif
 
+  private static let iso8601 = ISO8601DateFormatter()
+
   private let deviceId: UUID
   private let session: URLSession
 
@@ -50,7 +52,7 @@ actor APIClient {
 
     var body: [String: Any] = ["deviceId": deviceId.uuidString]
     if let installDate {
-      body["installDate"] = ISO8601DateFormatter().string(from: installDate)
+      body["installDate"] = Self.iso8601.string(from: installDate)
     }
     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

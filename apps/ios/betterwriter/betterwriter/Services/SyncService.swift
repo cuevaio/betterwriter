@@ -7,6 +7,8 @@ import SwiftData
 final class SyncService {
   static let shared = SyncService()
 
+  private static let iso8601 = ISO8601DateFormatter()
+
   private init() {}
 
   /// Sync entries that need to be uploaded to the server.
@@ -32,11 +34,10 @@ final class SyncService {
       }
 
       // Build entry updates — dayIndex per entry echoes server-assigned values
-      let dateFormatter = ISO8601DateFormatter()
       let entryUpdates: [[String: Any]] = pending.map { entry in
         var dict: [String: Any] = [
           "dayIndex": entry.dayIndex,
-          "calendarDate": dateFormatter.string(from: entry.calendarDate),
+          "calendarDate": Self.iso8601.string(from: entry.calendarDate),
           "readingCompleted": entry.readingCompleted,
           "writingCompleted": entry.writingCompleted,
           "writingWordCount": entry.writingWordCount,
@@ -58,7 +59,9 @@ final class SyncService {
       for entry in pending {
         entry.needsSync = false
       }
-      try? modelContext.save()
+      do { try modelContext.save() } catch {
+        print("SyncService: Failed to mark entries as synced: \(error)")
+      }
 
       if let serverDay = response.currentDayIndex {
         print("SyncService: Synced \(pending.count) entries, server currentDayIndex=\(serverDay)")

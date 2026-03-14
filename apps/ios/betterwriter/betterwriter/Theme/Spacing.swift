@@ -21,6 +21,9 @@ enum Spacing {
   /// TextEditor placeholder horizontal alignment inset
   static let textEditorLeadingInset: CGFloat = 5
 
+  /// Minimum spacer height for centered content (loading/error states)
+  static let centeredMinSpacer: CGFloat = 120
+
   /// Minimum height for TextEditor in writing views
   static let textEditorMinHeight: CGFloat = 300
 
