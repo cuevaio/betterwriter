@@ -713,7 +713,8 @@ export default function ScreenshotsPage() {
         const slideEl = document.createElement("div");
         slideEl.style.width = `${IPHONE_W}px`;
         slideEl.style.height = `${IPHONE_H}px`;
-        slideEl.style.position = "absolute";
+        slideEl.style.position = "fixed";
+        slideEl.style.top = "0";
         slideEl.style.left = "-9999px";
         slideEl.style.fontFamily = SERIF;
         document.body.appendChild(slideEl);
@@ -729,10 +730,8 @@ export default function ScreenshotsPage() {
           setTimeout(resolve, 500);
         });
 
-        // Move on-screen for capture
+        // Move on-screen for capture — use fixed positioning so scroll has no effect
         slideEl.style.left = "0px";
-        slideEl.style.opacity = "1";
-        slideEl.style.zIndex = "-1";
 
         const opts = {
           width: IPHONE_W,
@@ -747,8 +746,6 @@ export default function ScreenshotsPage() {
 
         // Move back off-screen
         slideEl.style.left = "-9999px";
-        slideEl.style.opacity = "";
-        slideEl.style.zIndex = "";
 
         // Draw through a canvas to strip alpha channel and resize if needed
         const finalUrl = await new Promise<string>((resolve) => {

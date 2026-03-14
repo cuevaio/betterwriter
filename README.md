@@ -7,6 +7,17 @@ Better Writer is a daily writing habit app:
 - Write about it from memory two days later.
 - Build consistency over time.
 
+## Screenshots
+
+<p align="center">
+  <img src="https://betterwriter.vercel.app/show/01-hero-1284x2778.png" width="180" alt="Hero" />
+  <img src="https://betterwriter.vercel.app/show/02-method-1284x2778.png" width="180" alt="Method" />
+  <img src="https://betterwriter.vercel.app/show/03-reading-1284x2778.png" width="180" alt="Reading" />
+  <img src="https://betterwriter.vercel.app/show/04-writing-1284x2778.png" width="180" alt="Writing" />
+  <img src="https://betterwriter.vercel.app/show/05-progress-1284x2778.png" width="180" alt="Progress" />
+  <img src="https://betterwriter.vercel.app/show/06-closing-1284x2778.png" width="180" alt="Closing" />
+</p>
+
 This repository is a Bun + Turborepo monorepo.
 
 ## Apps
