@@ -170,3 +170,4 @@ No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` found.
 - Do not edit generated outputs (`.next/`, `.turbo/`, `node_modules/`).
 - Run relevant verification after changes (lint, build, typecheck when applicable).
 - If tooling or scripts change, update this `AGENTS.md` in the same PR.
+- When creating a commit, stage and include the active OpenCode plan file (`.opencode/plan.md` or equivalent) so the plan that drove the change is recorded alongside the code.
