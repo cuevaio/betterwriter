@@ -7,7 +7,12 @@ import { NextResponse } from "next/server";
  */
 export function proxy(request: NextRequest) {
   const auth = request.headers.get("Authorization");
-  if (!auth?.startsWith("Bearer ")) {
+  const hasQstashSignature = Boolean(request.headers.get("upstash-signature"));
+
+  // Allow requests with a valid Bearer token OR a QStash signature.
+  // QStash signatures are verified cryptographically inside the workflow
+  // handler — the proxy is just an early-rejection layer.
+  if (!auth?.startsWith("Bearer ") && !hasQstashSignature) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   return NextResponse.next();

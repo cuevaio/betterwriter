@@ -14,11 +14,13 @@
   "dependencies": {
     "@libsql/client": "^0.14",
     "@mem0/vercel-ai-provider": "^2.0.5",
+    "@upstash/qstash": "^2.9.0",
     "@upstash/realtime": "^0.2.6-canary.2",
     "@upstash/redis": "^1.35.4",
     "@upstash/workflow": "^0.2.20",
     "ai": "^6",
     "drizzle-orm": "^0.44",
+    "html-to-image": "^1.11.13",
     "next": "^16.1.6",
     "react": "^19",
     "react-dom": "^19",

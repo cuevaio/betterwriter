@@ -1,3 +1,4 @@
+import { Client } from "@upstash/qstash";
 import { serve } from "@upstash/workflow/nextjs";
 import { and, eq } from "drizzle-orm";
 import {
@@ -15,6 +16,10 @@ import { requireUserId } from "@/lib/auth";
 import { getCurrentDayIndex, getNextBonusDayIndex } from "@/lib/day-index";
 import { db } from "@/lib/db";
 import { entries, users } from "@/lib/db/schema";
+
+const qstash = new Client({
+  token: process.env.QSTASH_TOKEN as string,
+});
 
 // GET /api/readings/generate/stream — Replay + live durable SSE stream.
 // The server looks up the active streamId for this user so the client
@@ -307,12 +312,19 @@ export async function POST(request: Request) {
     return Response.json({ ok: true, mode: "started" }, { status: 202 });
   }
 
-  // Production path: dispatch via Upstash Workflow (QStash).
-  // All payload fields are included so the workflow step doesn't re-query.
-  const enrichedRequest = new Request(request.url, {
-    method: request.method,
-    headers: request.headers,
-    body: JSON.stringify(payload),
+  // Production path: publish to QStash so it calls back to this endpoint
+  // with a valid upstash-signature. The serve() handler then verifies the
+  // signature and orchestrates the workflow steps.
+  const proto = request.headers.get("x-forwarded-proto") || "https";
+  const host = request.headers.get("host") || "localhost:3000";
+  const callbackUrl = `${proto}://${host}/api/readings/generate/stream`;
+
+  await qstash.publishJSON({
+    url: callbackUrl,
+    body: payload,
+    headers: {
+      Authorization: request.headers.get("Authorization") || "",
+    },
   });
-  return workflowPOST(enrichedRequest);
+  return Response.json({ ok: true, mode: "started" }, { status: 202 });
 }
