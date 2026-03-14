@@ -7,9 +7,11 @@ Operational guide for coding agents working in this repository.
 - Monorepo: Bun workspaces (`apps/*`) + Turborepo (`turbo.json`).
 - Root package: `betterwriter` (package manager: `bun@1.2.18`).
 - Apps:
-  - `apps/web`: Next.js 15 + React 19 API-first backend/web app.
+  - `apps/web`: Next.js 16 + React 19 API-first backend/web app (pure API; web UI is a static marketing page).
   - `apps/ios`: native SwiftUI/SwiftData app (not a Bun workspace).
 - No shared JS packages (`packages/` does not exist).
+- AI generation uses Vercel AI SDK `^6` (`streamText`) with `@mem0/vercel-ai-provider` for memory-aware responses.
+- Background jobs use QStash + `@upstash/workflow`; stream state lives in Upstash Redis.
 
 ## 2) Build / Lint / Test Commands
 
@@ -17,6 +19,7 @@ Operational guide for coding agents working in this repository.
 |---|---|---|
 | Install deps | `bun install` | root |
 | Dev (all) | `bun run dev` | root |
+| Dev w/ Turbopack | `bun run dev:turbo` | `apps/web` |
 | Build (all) | `bun run build` | root |
 | Lint (all) | `bun run lint` | root |
 | Format (Biome) | `bun run format` | root |
@@ -133,12 +136,22 @@ Next.js 16+ uses the `proxy` file convention instead of the deprecated `middlewa
 - Export a function named `proxy` (not `middleware`).
 - Use `export const config = { matcher: [...] }` as before.
 
+### Day index partitioning
+
+- Normal days: `0–99,999` (completion-based, not calendar-based).
+- Bonus readings: `100,000–199,999`.
+- Free writes: `>= 200,000`.
+- `debugDayOverride` on the user row overrides computed day (set via direct SQL only).
+
 ### Durable SSE streaming
 
 - Shared utilities: `lib/api/durable-sse.ts`, `lib/ai/streaming.ts`, `lib/ai/durable-stream.ts`.
-- Event lifecycle: `start` -> N x `delta` -> `complete` | `error`.
-- POST starts generation (acquires entity lock in Redis); GET replays + live-tails.
+- Event lifecycle: `start` -> N x `delta` -> `complete` | `error`, plus `heartbeat` every 5s.
+- POST starts generation (acquires entity lock in Redis via `SET NX`); GET replays + live-tails.
 - Supports `Last-Event-ID` for reconnection. Emit terminal events exactly once.
+- QStash posts back to the same route with `upstash-signature`; workflow runs inside
+  `serve()` from `@upstash/workflow/nextjs`.
+- Use `serializeEntry()` from `lib/api/durable-sse.ts` when emitting DB rows in SSE/JSON.
 
 ## 6) Code Style -- Swift (`apps/ios`)
 
@@ -164,7 +177,29 @@ Next.js 16+ uses the `proxy` file convention instead of the deprecated `middlewa
 
 No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` found.
 
-## 9) Agent Working Agreement
+## 9) Agent Skills
+
+Skills are pre-loaded instruction sets that give agents specialized knowledge for
+specific tasks. Load a skill with the `skill` tool before starting work in that domain.
+
+### Applicable skills for this project
+
+| Skill | When to load it |
+|---|---|
+| `ai-sdk` | Any time you add or modify AI generation code in `apps/web/lib/ai/` — reading curation, prompt generation, streaming with `streamText`, tool calling, or `@mem0/vercel-ai-provider` memory integration. Also load when adding new AI-powered API routes. |
+| `vercel-react-best-practices` | When writing or reviewing React/Next.js code in `apps/web/app/` — page components, layout, server vs. client component decisions, data fetching patterns, or bundle optimization. |
+| `swiftui-expert-skill` | Any work in `apps/ios/betterwriter/` — new SwiftUI views, state management, SwiftData model changes, `@Observable` classes, or refactoring existing views. |
+| `mobile-ios-design` | When designing new iOS screens or reviewing existing views for iOS Human Interface Guidelines compliance — spacing, typography, interaction patterns, and accessibility. |
+
+### Skills that do NOT apply
+
+- `tailwind-design-system` — The web app uses inline styles and CSS variables, not Tailwind.
+- `react-useeffect` — The web has no client components with `useEffect`; it is fully server-rendered.
+- `clerk` / `clerk-*` — Auth is a custom zero-dependency JWT implementation (`lib/auth.ts`).
+- `trigger-*` — Background jobs use QStash + `@upstash/workflow`, not Trigger.dev.
+- All other skills (`scaffold`, `create-element`, `threejs-animation`, etc.) are not relevant.
+
+## 10) Agent Working Agreement
 
 - Prefer minimal, surgical edits.
 - Do not edit generated outputs (`.next/`, `.turbo/`, `node_modules/`).
