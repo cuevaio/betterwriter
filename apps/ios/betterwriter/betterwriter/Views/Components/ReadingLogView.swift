@@ -49,7 +49,7 @@ struct ReadingLogView: View {
         ScrollView {
           VStack(alignment: .leading, spacing: Spacing.l) {
             if let body = entry.readingBody {
-              Text(Self.markdownAttributedString(body))
+              Text(MarkdownHelper.attributedString(body))
                 .font(Typography.serifBody)
                 .lineSpacing(6)
                 .textSelection(.enabled)
@@ -78,11 +78,4 @@ struct ReadingLogView: View {
     return String(firstLine.dropFirst(2).dropLast(2))
   }
 
-  private static func markdownAttributedString(_ text: String) -> AttributedString {
-    let options = AttributedString.MarkdownParsingOptions(
-      interpretedSyntax: .inlineOnlyPreservingWhitespace
-    )
-    return (try? AttributedString(markdown: text, options: options))
-      ?? AttributedString(text)
-  }
 }

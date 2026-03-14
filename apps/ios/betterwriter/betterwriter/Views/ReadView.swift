@@ -5,7 +5,6 @@ struct ReadView: View {
   let dayIndex: Int
   let onComplete: () -> Void
 
-  @Environment(\.openURL) private var openURL
   @Environment(\.modelContext) private var modelContext
   @Query private var profiles: [UserProfile]
   @Query(sort: \DayEntry.dayIndex) private var entries: [DayEntry]
@@ -56,7 +55,7 @@ struct ReadView: View {
   /// Handles bold (**), italic (*), links, code, and strikethrough.
   /// Falls back to plain text if markdown parsing fails.
   private func markdownContent(text: String) -> some View {
-    Text(Self.markdownAttributedString(text))
+    Text(MarkdownHelper.attributedString(text))
       .font(Typography.serifBody)
       .lineSpacing(6)
       .foregroundStyle(WQColor.primary)
@@ -64,19 +63,10 @@ struct ReadView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private static func markdownAttributedString(_ text: String) -> AttributedString {
-    let options = AttributedString.MarkdownParsingOptions(
-      interpretedSyntax: .inlineOnlyPreservingWhitespace
-    )
-    return (try? AttributedString(markdown: text, options: options))
-      ?? AttributedString(text)
-  }
-
   /// Split a delta into word-boundary chunks and enqueue them for animated reveal.
-  /// Each chunk is revealed with a fade-in, giving a "words appearing" feel.
   @MainActor
   private func enqueueTypewriter(_ text: String) {
-    let chunks = Self.wordChunks(from: text)
+    let chunks = TypewriterAnimator.wordChunks(from: text)
     pendingChunks.append(contentsOf: chunks)
     guard revealTask == nil || revealTask!.isCancelled else { return }
     revealTask = Task {
@@ -85,8 +75,6 @@ struct ReadView: View {
         withAnimation(.easeIn(duration: 0.12)) {
           displayedText += chunk
         }
-        // Delay between chunks: faster for short chunks (punctuation),
-        // slightly longer for real words so the eye can track them.
         let delay: UInt64 = chunk.count <= 2 ? 20_000_000 : 40_000_000
         try? await Task.sleep(nanoseconds: delay)
       }
@@ -94,28 +82,12 @@ struct ReadView: View {
     }
   }
 
-  /// Split text on whitespace boundaries, keeping the trailing space attached
-  /// to each word so re-joining is lossless.
-  private static func wordChunks(from text: String) -> [String] {
-    guard !text.isEmpty else { return [] }
-    var chunks: [String] = []
-    var current = ""
-    for ch in text {
-      current.append(ch)
-      if ch.isWhitespace && !current.trimmingCharacters(in: .whitespaces).isEmpty {
-        chunks.append(current)
-        current = ""
-      }
-    }
-    if !current.isEmpty { chunks.append(current) }
-    return chunks
-  }
-
   private var loadingView: some View {
     VStack(spacing: Spacing.m) {
       Spacer(minLength: 200)
       ProgressView()
         .tint(WQColor.primary)
+        .accessibilityLabel("Loading today's reading")
       Text("Finding and streaming today's reading...")
         .font(Typography.sansCaption)
         .foregroundStyle(WQColor.secondary)
@@ -145,6 +117,7 @@ struct ReadView: View {
       Text("DONE READING")
     }
     .buttonStyle(WQOutlinedButtonStyle())
+    .accessibilityHint("Mark today's reading as complete")
     .padding(.horizontal, Spacing.contentHorizontal)
     .padding(.bottom, Spacing.l)
     .background(.ultraThinMaterial)

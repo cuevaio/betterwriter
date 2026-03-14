@@ -11,19 +11,12 @@ struct DoneView: View {
   @State private var showReadings = false
   @State private var showWritings = false
 
-  private var streak: Int {
-    DayEngine.calculateStreak(entries: Array(entries))
-  }
-
-  private var wordsRead: Int {
-    DayEngine.totalWordsRead(entries: Array(entries))
-  }
-
-  private var wordsWritten: Int {
-    DayEngine.totalWordsWritten(entries: Array(entries))
-  }
-
   var body: some View {
+    let entryArray = Array(entries)
+    let streak = DayEngine.calculateStreak(entries: entryArray)
+    let wordsRead = DayEngine.totalWordsRead(entries: entryArray)
+    let wordsWritten = DayEngine.totalWordsWritten(entries: entryArray)
+
     VStack(spacing: 0) {
       Spacer()
 
@@ -37,15 +30,15 @@ struct DoneView: View {
 
       // Inline stats
       HStack(spacing: Spacing.l) {
-        statColumn(value: "\(streak)", label: "Streak")
-        statColumn(value: "\(wordsRead)", label: "Read")
-        statColumn(value: "\(wordsWritten)", label: "Written")
+        StatColumnView(value: "\(streak)", label: "Streak")
+        StatColumnView(value: "\(wordsRead)", label: "Read")
+        StatColumnView(value: "\(wordsWritten)", label: "Written")
       }
       .frame(maxWidth: .infinity)
       .padding(.horizontal, Spacing.contentHorizontal)
 
       // Activity chart
-      ActivityChartView(entries: Array(entries), compact: true)
+      ActivityChartView(entries: entryArray, compact: true)
         .padding(.horizontal, Spacing.contentHorizontal)
         .padding(.vertical, Spacing.l)
 
@@ -87,7 +80,7 @@ struct DoneView: View {
     .sheet(isPresented: $showReadings) {
       NavigationStack {
         ScrollView {
-          ReadingLogView(entries: Array(entries))
+          ReadingLogView(entries: entryArray)
             .padding(.horizontal, Spacing.contentHorizontal)
             .padding(.vertical, Spacing.l)
         }
@@ -99,7 +92,7 @@ struct DoneView: View {
     .sheet(isPresented: $showWritings) {
       NavigationStack {
         ScrollView {
-          WritingLogView(entries: Array(entries))
+          WritingLogView(entries: entryArray)
             .padding(.horizontal, Spacing.contentHorizontal)
             .padding(.vertical, Spacing.l)
         }
@@ -108,18 +101,5 @@ struct DoneView: View {
         .wqSheetToolbar { showWritings = false }
       }
     }
-  }
-
-  private func statColumn(value: String, label: String) -> some View {
-    VStack(spacing: Spacing.xs) {
-      Text(value)
-        .font(Typography.statNumber)
-        .foregroundStyle(WQColor.primary)
-      Text(label)
-        .font(Typography.statLabel)
-        .foregroundStyle(WQColor.secondary)
-        .textCase(.uppercase)
-    }
-    .frame(maxWidth: .infinity)
   }
 }

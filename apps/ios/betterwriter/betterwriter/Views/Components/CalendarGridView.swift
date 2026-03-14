@@ -10,8 +10,6 @@ import SwiftUI
 ///   - compactCellSize: Cell size (pt) when `compact` is true. Default 7.
 struct ActivityChartView: View {
   let entries: [DayEntry]
-  /// Unused — kept for call-site compatibility during migration.
-  var profile: UserProfile? = nil
   var compact: Bool = false
   var compactCellSize: CGFloat = 7
 
@@ -72,6 +70,17 @@ struct ActivityChartView: View {
 
   // MARK: - Body
 
+  /// Summary for VoiceOver describing chart activity.
+  private var accessibilitySummary: String {
+    let totalDays = entries.filter {
+      $0.readingCompleted || $0.writingCompleted
+    }.count
+    let totalWords = entries.reduce(0) {
+      $0 + $1.readingWordCount + $1.writingWordCount
+    }
+    return "Activity chart. \(totalDays) active days, \(totalWords) total words."
+  }
+
   var body: some View {
     if compact {
       // Compact mode: fixed small cell size, fill width with as many weeks as fit.
@@ -95,6 +104,8 @@ struct ActivityChartView: View {
         )
       }
       .frame(height: compactChartHeight)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(accessibilitySummary)
     } else {
       GeometryReader { geo in
         let availableWidth = geo.size.width
@@ -119,6 +130,8 @@ struct ActivityChartView: View {
         )
       }
       .frame(height: fullChartHeight)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(accessibilitySummary)
     }
   }
 

@@ -10,6 +10,7 @@ struct RootView: View {
 
   @State private var currentPhase: AppPhase = .loading
   @State private var resolvedProfile: UserProfile?
+  @State private var syncTask: Task<Void, Never>?
 
   private var profile: UserProfile? { profiles.first }
 
@@ -90,7 +91,8 @@ struct RootView: View {
       if scenePhase == .active {
         advanceState()
         // Sync any pending entries when app comes to foreground
-        Task { @MainActor in
+        syncTask?.cancel()
+        syncTask = Task { @MainActor in
           await SyncService.shared.syncPendingEntries(
             entries: Array(entries),
             profile: profile,
@@ -125,7 +127,9 @@ struct RootView: View {
 
     let newProfile = UserProfile()
     modelContext.insert(newProfile)
-    try? modelContext.save()
+    do { try modelContext.save() } catch {
+      print("RootView: Failed to save new profile: \(error)")
+    }
 
     // Await auth so the user row exists on the server before any other API calls.
     // Without this, the app would race ahead to reading/writing streams while the

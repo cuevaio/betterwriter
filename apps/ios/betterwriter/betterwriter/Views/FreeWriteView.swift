@@ -13,16 +13,15 @@ struct FreeWriteView: View {
   @FocusState private var isFocused: Bool
   /// Direct reference to the free-write entry (separate from the main day entry).
   @State private var managedEntry: DayEntry?
-
-  private var wordCount: Int {
-    text.components(separatedBy: .whitespacesAndNewlines)
-      .filter { !$0.isEmpty }
-      .count
-  }
+  /// Cached word count to avoid re-splitting text on every access.
+  @State private var wordCount: Int = 0
+  /// Debounce task for auto-saving drafts.
+  @State private var draftSaveTask: Task<Void, Never>?
 
   var body: some View {
     VStack(spacing: 0) {
       WQBackButton {
+        draftSaveTask?.cancel()
         saveDraft()
         onBack()
       }
@@ -45,6 +44,8 @@ struct FreeWriteView: View {
             .scrollContentBackground(.hidden)
             .focused($isFocused)
             .frame(minHeight: 300)
+            .accessibilityLabel("Free writing area")
+            .accessibilityHint("Write whatever you want")
         }
         .padding(.horizontal, Spacing.contentHorizontal)
         .padding(.top, Spacing.m)
@@ -72,8 +73,16 @@ struct FreeWriteView: View {
       try? await Task.sleep(nanoseconds: 600_000_000)
       isFocused = true
     }
-    .onChange(of: text) { _, _ in
-      saveDraft()
+    .onChange(of: text) { _, newValue in
+      wordCount =
+        newValue.components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }.count
+      draftSaveTask?.cancel()
+      draftSaveTask = Task {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard !Task.isCancelled else { return }
+        saveDraft()
+      }
     }
   }
 

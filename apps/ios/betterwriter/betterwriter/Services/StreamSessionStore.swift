@@ -2,6 +2,7 @@ import Foundation
 
 /// Lightweight concurrency guard for stream loading operations.
 /// Prevents duplicate concurrent loads for the same entity.
+@MainActor
 final class StreamSessionStore {
   static let shared = StreamSessionStore()
 

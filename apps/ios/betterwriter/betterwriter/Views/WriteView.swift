@@ -3,6 +3,8 @@ import SwiftUI
 
 struct WriteView: View {
   let dayIndex: Int
+  /// The day whose reading the user is writing about. Retained for state
+  /// machine context; the server resolves this independently.
   let aboutDayIndex: Int
   let onComplete: () -> Void
 
@@ -22,14 +24,12 @@ struct WriteView: View {
   /// Direct reference to the managed entry, set once via modelContext.fetch().
   /// Avoids @Query timing races that could create duplicate entries.
   @State private var managedEntry: DayEntry?
+  /// Cached word count to avoid re-splitting text on every access.
+  @State private var wordCount: Int = 0
+  /// Debounce task for auto-saving drafts.
+  @State private var draftSaveTask: Task<Void, Never>?
 
   private var profile: UserProfile? { profiles.first }
-
-  private var wordCount: Int {
-    userText.components(separatedBy: .whitespacesAndNewlines)
-      .filter { !$0.isEmpty }
-      .count
-  }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -41,6 +41,7 @@ struct WriteView: View {
           if isLoadingPrompt {
             ProgressView()
               .tint(WQColor.primary)
+              .accessibilityLabel("Loading writing prompt")
               .frame(maxWidth: .infinity, alignment: .center)
           } else if !displayedPrompt.isEmpty {
             Text(displayedPrompt)
@@ -54,9 +55,17 @@ struct WriteView: View {
               .foregroundStyle(WQColor.secondary)
               .lineSpacing(4)
           } else if let promptError {
-            Text(promptError)
-              .font(Typography.sansCaption)
-              .foregroundStyle(WQColor.secondary)
+            VStack(spacing: Spacing.s) {
+              Text(promptError)
+                .font(Typography.sansCaption)
+                .foregroundStyle(WQColor.secondary)
+              Button("Try again") {
+                isLoadingPrompt = true
+                self.promptError = nil
+                Task { await loadPromptAndDraft() }
+              }
+              .font(Typography.sansButton)
+            }
           }
 
           // Text editor
@@ -76,6 +85,8 @@ struct WriteView: View {
               .scrollContentBackground(.hidden)
               .focused($isEditorFocused)
               .frame(minHeight: 300)
+              .accessibilityLabel("Writing area")
+              .accessibilityHint("Write your response here")
           }
 
           Spacer(minLength: Spacing.xxxl)
@@ -95,6 +106,7 @@ struct WriteView: View {
           Text("DONE WRITING")
         }
         .buttonStyle(WQOutlinedButtonStyle())
+        .accessibilityHint("Mark your writing as complete")
         .disabled(userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
       .padding(.horizontal, Spacing.contentHorizontal)
@@ -104,8 +116,16 @@ struct WriteView: View {
     .task {
       await loadPromptAndDraft()
     }
-    .onChange(of: userText) { _, _ in
-      saveDraft()
+    .onChange(of: userText) { _, newValue in
+      wordCount =
+        newValue.components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }.count
+      draftSaveTask?.cancel()
+      draftSaveTask = Task {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard !Task.isCancelled else { return }
+        saveDraft()
+      }
     }
   }
 
@@ -113,7 +133,7 @@ struct WriteView: View {
 
   @MainActor
   private func enqueueTypewriter(_ text: String) {
-    let chunks = Self.wordChunks(from: text)
+    let chunks = TypewriterAnimator.wordChunks(from: text)
     pendingPromptChunks.append(contentsOf: chunks)
     guard revealTask == nil || revealTask!.isCancelled else { return }
     revealTask = Task {
@@ -127,21 +147,6 @@ struct WriteView: View {
       }
       revealTask = nil
     }
-  }
-
-  private static func wordChunks(from text: String) -> [String] {
-    guard !text.isEmpty else { return [] }
-    var chunks: [String] = []
-    var current = ""
-    for ch in text {
-      current.append(ch)
-      if ch.isWhitespace && !current.trimmingCharacters(in: .whitespaces).isEmpty {
-        chunks.append(current)
-        current = ""
-      }
-    }
-    if !current.isEmpty { chunks.append(current) }
-    return chunks
   }
 
   // MARK: - Actions
@@ -277,7 +282,7 @@ struct WriteView: View {
         return
       }
       prompt = nil
-      promptError = "Couldn't load prompt. Pull to retry."
+      promptError = "Couldn't load prompt."
       print("WriteView: Failed to load prompt: \(error)")
       isLoadingPrompt = false
     }
@@ -293,6 +298,7 @@ struct WriteView: View {
 
   @MainActor
   private func completeWriting() {
+    draftSaveTask?.cancel()
     let entry = resolveEntry()
 
     entry.writingText = userText

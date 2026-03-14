@@ -57,7 +57,7 @@ struct BonusReadView: View {
   // MARK: - Subviews
 
   private func markdownContent(text: String) -> some View {
-    Text(Self.markdownAttributedString(text))
+    Text(MarkdownHelper.attributedString(text))
       .font(Typography.serifBody)
       .lineSpacing(6)
       .foregroundStyle(WQColor.primary)
@@ -65,17 +65,9 @@ struct BonusReadView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private static func markdownAttributedString(_ text: String) -> AttributedString {
-    let options = AttributedString.MarkdownParsingOptions(
-      interpretedSyntax: .inlineOnlyPreservingWhitespace
-    )
-    return (try? AttributedString(markdown: text, options: options))
-      ?? AttributedString(text)
-  }
-
   @MainActor
   private func enqueueTypewriter(_ text: String) {
-    let chunks = Self.wordChunks(from: text)
+    let chunks = TypewriterAnimator.wordChunks(from: text)
     pendingChunks.append(contentsOf: chunks)
     guard revealTask == nil || revealTask!.isCancelled else { return }
     revealTask = Task {
@@ -91,26 +83,12 @@ struct BonusReadView: View {
     }
   }
 
-  private static func wordChunks(from text: String) -> [String] {
-    guard !text.isEmpty else { return [] }
-    var chunks: [String] = []
-    var current = ""
-    for ch in text {
-      current.append(ch)
-      if ch.isWhitespace && !current.trimmingCharacters(in: .whitespaces).isEmpty {
-        chunks.append(current)
-        current = ""
-      }
-    }
-    if !current.isEmpty { chunks.append(current) }
-    return chunks
-  }
-
   private var loadingView: some View {
     VStack(spacing: Spacing.m) {
       Spacer(minLength: 200)
       ProgressView()
         .tint(WQColor.primary)
+        .accessibilityLabel("Loading bonus reading")
       Text("Finding something interesting to read...")
         .font(Typography.sansCaption)
         .foregroundStyle(WQColor.secondary)
@@ -145,6 +123,7 @@ struct BonusReadView: View {
       }
     }
     .buttonStyle(WQOutlinedButtonStyle())
+    .accessibilityHint("Mark this bonus reading as complete")
     .disabled(isCompleting)
     .padding(.horizontal, Spacing.contentHorizontal)
     .padding(.bottom, Spacing.l)

@@ -10,11 +10,21 @@
 		89C10E4C2F631ACE00D36EF1 /* betterwriter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = betterwriter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		89C10E5A2F631AD100D36EF1 /* Exceptions for "betterwriter" folder in "betterwriter" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"betterwriter-Info.plist",
+			);
+			target = 89C10E4B2F631ACE00D36EF1 /* betterwriter */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		89C10E4E2F631ACE00D36EF1 /* betterwriter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				89C10E5A2F631AD100D36EF1 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+				89C10E5A2F631AD100D36EF1 /* Exceptions for "betterwriter" folder in "betterwriter" target */,
 			);
 			path = betterwriter;
 			sourceTree = "<group>";
@@ -106,16 +116,6 @@
 			);
 		};
 /* End PBXProject section */
-
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		89C10E5A2F631AD100D36EF1 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"betterwriter-Info.plist",
-			);
-			target = 89C10E4B2F631ACE00D36EF1 /* betterwriter */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXResourcesBuildPhase section */
 		89C10E4A2F631ACE00D36EF1 /* Resources */ = {
