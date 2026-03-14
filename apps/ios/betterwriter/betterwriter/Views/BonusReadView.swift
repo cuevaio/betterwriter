@@ -11,11 +11,8 @@ struct BonusReadView: View {
 
   @State private var isLoading = true
   @State private var errorMessage: String?
-  @State private var streamedBody = ""
-  // Word-fade streaming state
   @State private var displayedText = ""
-  @State private var pendingChunks: [String] = []
-  @State private var revealTask: Task<Void, Never>?
+  @State private var typewriter = TypewriterAnimator()
   /// Direct reference to the bonus reading entry.
   @State private var managedEntry: DayEntry?
   @State private var isCompleting = false
@@ -30,13 +27,16 @@ struct BonusReadView: View {
           Spacer(minLength: Spacing.m)
 
           if isLoading {
-            loadingView
+            WQLoadingView(
+              caption: "Finding something interesting to read...")
           } else if let error = errorMessage {
-            errorView(error)
+            WQErrorView(message: error) {
+              Task { await loadBonusReading() }
+            }
           } else if !displayedText.isEmpty {
-            markdownContent(text: displayedText)
+            WQMarkdownContent(text: displayedText)
           } else if let body = managedEntry?.readingBody {
-            markdownContent(text: body)
+            WQMarkdownContent(text: body)
           }
 
           Spacer(minLength: Spacing.xxxl)
@@ -45,7 +45,9 @@ struct BonusReadView: View {
       }
     }
     .safeAreaInset(edge: .bottom) {
-      if !isLoading && errorMessage == nil && managedEntry?.readingBody != nil {
+      if !isLoading && errorMessage == nil
+        && managedEntry?.readingBody != nil
+      {
         doneButton
       }
     }
@@ -56,63 +58,6 @@ struct BonusReadView: View {
 
   // MARK: - Subviews
 
-  private func markdownContent(text: String) -> some View {
-    Text(MarkdownHelper.attributedString(text))
-      .font(Typography.serifBody)
-      .lineSpacing(6)
-      .foregroundStyle(WQColor.primary)
-      .textSelection(.enabled)
-      .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  @MainActor
-  private func enqueueTypewriter(_ text: String) {
-    let chunks = TypewriterAnimator.wordChunks(from: text)
-    pendingChunks.append(contentsOf: chunks)
-    guard revealTask == nil || revealTask!.isCancelled else { return }
-    revealTask = Task {
-      while !pendingChunks.isEmpty && !Task.isCancelled {
-        let chunk = pendingChunks.removeFirst()
-        withAnimation(.easeIn(duration: 0.12)) {
-          displayedText += chunk
-        }
-        let delay: UInt64 = chunk.count <= 2 ? 20_000_000 : 40_000_000
-        try? await Task.sleep(nanoseconds: delay)
-      }
-      revealTask = nil
-    }
-  }
-
-  private var loadingView: some View {
-    VStack(spacing: Spacing.m) {
-      Spacer(minLength: 200)
-      ProgressView()
-        .tint(WQColor.primary)
-        .accessibilityLabel("Loading bonus reading")
-      Text("Finding something interesting to read...")
-        .font(Typography.sansCaption)
-        .foregroundStyle(WQColor.secondary)
-      Spacer()
-    }
-    .frame(maxWidth: .infinity)
-  }
-
-  private func errorView(_ message: String) -> some View {
-    VStack(spacing: Spacing.m) {
-      Spacer(minLength: 200)
-      Text(message)
-        .font(Typography.sansBody)
-        .foregroundStyle(WQColor.secondary)
-        .multilineTextAlignment(.center)
-      Button("Try again") {
-        Task { await loadBonusReading() }
-      }
-      .font(Typography.sansButton)
-      Spacer()
-    }
-    .frame(maxWidth: .infinity)
-  }
-
   private var doneButton: some View {
     Button(action: completeReading) {
       if isCompleting {
@@ -122,17 +67,20 @@ struct BonusReadView: View {
         Text("DONE READING")
       }
     }
-    .buttonStyle(WQOutlinedButtonStyle())
+    .buttonStyle(WQOutlinedButtonStyle(isFilled: true))
     .accessibilityHint("Mark this bonus reading as complete")
     .disabled(isCompleting)
     .padding(.horizontal, Spacing.contentHorizontal)
     .padding(.bottom, Spacing.l)
-    .background(.ultraThinMaterial)
+    .background(
+      WQColor.background.opacity(0.9)
+        .background(.ultraThinMaterial)
+    )
   }
 
   // MARK: - Actions
 
-  /// Stream bonus reading content from server. The server decides the bonus dayIndex.
+  /// Stream bonus reading content from server.
   @MainActor
   private func loadBonusReading(retried: Bool = false) async {
     // Check for an existing in-progress bonus entry with content.
@@ -144,7 +92,7 @@ struct BonusReadView: View {
       }
     }
 
-    // Concurrency guard — one active bonus reading load at a time.
+    // Concurrency guard
     let guardKey = "stream.reading.bonus"
     let store = StreamSessionStore.shared
     guard store.beginLoad(key: guardKey) else { return }
@@ -152,95 +100,91 @@ struct BonusReadView: View {
 
     isLoading = true
     errorMessage = nil
-    streamedBody = ""
     displayedText = ""
-    pendingChunks = []
-    revealTask?.cancel()
-    revealTask = nil
+    typewriter.cancel()
 
     do {
-      // Step 1: POST — server decides what to do.
-      // No streamId sent; the server owns stream identity.
-      let kickoff = try await APIClient.shared.startReadingStream()
+      let result = try await APIClient.shared.generateReading()
 
-      if kickoff.mode == "completed", let completedEntry = kickoff.entry {
-        // Reading already generated — save and display without streaming.
-        let localEntry = findOrCreateLocalEntry(from: completedEntry)
-        localEntry.readingBody = completedEntry.readingBody ?? ""
-        managedEntry = localEntry
-        do { try modelContext.save() } catch {
-          print("BonusReadView: save completed entry failed: \(error)")
-        }
-        isLoading = false
-        return
-      }
-
-      // Step 2: GET — connect to the SSE stream.
-      var completedEntry: APIClient.EntryResponse?
-      var gotUsableStreamContent = false
-
-      let readingEvents = await APIClient.shared.streamReading(lastEventId: nil)
-      for try await event in readingEvents {
-        switch event {
-        case .start:
-          break
-        case .delta(let text, _):
-          streamedBody += text
-          enqueueTypewriter(text)
+      switch result {
+      case .immediate(let event):
+        if case .complete(let entryResponse, _) = event {
+          let localEntry = findOrCreateLocalEntry(from: entryResponse)
+          localEntry.readingBody = entryResponse.readingBody ?? ""
+          managedEntry = localEntry
+          do { try modelContext.save() } catch {
+            print("BonusReadView: save completed entry failed: \(error)")
+          }
+          if let body = entryResponse.readingBody, !body.isEmpty {
+            isLoading = false
+            typewriter.enqueue(body, into: $displayedText, fast: true)
+            await typewriter.waitForCompletion()
+          }
           isLoading = false
-          gotUsableStreamContent = true
-        case .complete(let entryResponse, _):
-          completedEntry = entryResponse
-        case .heartbeat:
-          break
-        case .end:
-          break
-        case .error(let message, _):
+        }
+
+      case .stream(let stream):
+        var completedEntry: APIClient.EntryResponse?
+        var streamedBody = ""
+
+        for try await event in stream {
+          switch event {
+          case .start:
+            break
+          case .delta(let text, _):
+            streamedBody += text
+            typewriter.enqueue(text, into: $displayedText)
+            isLoading = false
+          case .complete(let entryResponse, _):
+            completedEntry = entryResponse
+          case .heartbeat, .end:
+            break
+          case .error(let message, _):
+            throw NSError(
+              domain: "BonusReadStream", code: 500,
+              userInfo: [NSLocalizedDescriptionKey: message]
+            )
+          }
+        }
+
+        await typewriter.waitForCompletion()
+
+        if let response = completedEntry {
+          let localEntry = findOrCreateLocalEntry(from: response)
+          localEntry.readingBody = response.readingBody ?? streamedBody
+          managedEntry = localEntry
+          do { try modelContext.save() } catch {
+            print("BonusReadView: save reading body failed: \(error)")
+          }
+        } else if !streamedBody.isEmpty, let entry = managedEntry {
+          entry.readingBody = streamedBody
+          do { try modelContext.save() } catch {
+            print("BonusReadView: save streamed body failed: \(error)")
+          }
+        } else {
           throw NSError(
             domain: "BonusReadStream", code: 500,
-            userInfo: [NSLocalizedDescriptionKey: message]
+            userInfo: [
+              NSLocalizedDescriptionKey:
+                "Reading stream did not return content"
+            ]
           )
         }
       }
 
-      // Wait for any in-flight word-fade animation to finish.
-      if let task = revealTask { await task.value }
-
-      if let response = completedEntry {
-        // Server created the entry with the bonus dayIndex.
-        let localEntry = findOrCreateLocalEntry(from: response)
-        localEntry.readingBody = response.readingBody ?? streamedBody
-        managedEntry = localEntry
-        do { try modelContext.save() } catch {
-          print("BonusReadView: save reading body failed: \(error)")
-        }
-      } else if gotUsableStreamContent, let entry = managedEntry {
-        entry.readingBody = streamedBody
-        do { try modelContext.save() } catch {
-          print("BonusReadView: save streamed body failed: \(error)")
-        }
-      } else {
-        throw NSError(
-          domain: "BonusReadStream", code: 500,
-          userInfo: [NSLocalizedDescriptionKey: "Reading stream did not return content"]
-        )
-      }
-
-      streamedBody = ""
-      displayedText = ""
       isLoading = false
     } catch {
       if !retried {
         await loadBonusReading(retried: true)
         return
       }
-      errorMessage = "Couldn't load the reading. Check your connection."
+      errorMessage =
+        "Couldn't load the reading. Check your connection."
       isLoading = false
       print("BonusReadView: Failed to load reading: \(error)")
     }
   }
 
-  /// Look for an existing in-progress bonus reading entry in the local store.
   @MainActor
   private func findInProgressBonusEntry() -> DayEntry? {
     let descriptor = FetchDescriptor<DayEntry>(
@@ -251,9 +195,10 @@ struct BonusReadView: View {
     return try? modelContext.fetch(descriptor).first
   }
 
-  /// Create or find a local DayEntry matching the server response.
   @MainActor
-  private func findOrCreateLocalEntry(from response: APIClient.EntryResponse) -> DayEntry {
+  private func findOrCreateLocalEntry(
+    from response: APIClient.EntryResponse
+  ) -> DayEntry {
     let targetIndex = response.dayIndex
     let descriptor = FetchDescriptor<DayEntry>(
       predicate: #Predicate<DayEntry> {
@@ -281,8 +226,8 @@ struct BonusReadView: View {
       print("BonusReadView: save completion failed: \(error)")
     }
 
-    // Await server sync so the entity lock is released before the user
-    // can request a new reading (prevents showing the old reading).
+    Haptics.medium()
+
     Task {
       do {
         _ = try await APIClient.shared.updateEntry(
@@ -292,8 +237,9 @@ struct BonusReadView: View {
           ]
         )
       } catch {
-        // Local state is correct; SyncService will retry later.
-        print("BonusReadView: Failed to sync reading completion: \(error)")
+        print(
+          "BonusReadView: Failed to sync reading completion: \(error)"
+        )
       }
       onComplete()
     }
