@@ -1,2 +1,2 @@
-app_identifier("thecave.betterwriter")
+app_identifier("cuevaio.betterwriter")
 team_id(ENV["APPLE_TEAM_ID"])
