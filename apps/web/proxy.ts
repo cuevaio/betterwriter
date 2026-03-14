@@ -1,11 +1,11 @@
-import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
 /**
- * Thin middleware for early rejection of unauthenticated API requests.
+ * Thin proxy for early rejection of unauthenticated API requests.
  * Full JWT verification happens in requireUserId() within each route handler.
  */
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const auth = request.headers.get("Authorization");
   if (!auth?.startsWith("Bearer ")) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
