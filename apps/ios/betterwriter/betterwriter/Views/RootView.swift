@@ -12,6 +12,7 @@ struct RootView: View {
   @State private var resolvedProfile: UserProfile?
   @State private var syncTask: Task<Void, Never>?
   @State private var loadingPulse = false
+  @State private var lastPrefetchedDayIndex: Int?
 
   private var profile: UserProfile? { profiles.first }
 
@@ -108,6 +109,8 @@ struct RootView: View {
       // Pre-fetch both reading and prompt in parallel so views
       // have data ready immediately when the user navigates.
       PrefetchStore.shared.prefetch()
+      lastPrefetchedDayIndex = DayEngine.computeCurrentDayIndex(
+        entries: Array(entries))
 
       advanceState(profileOverride: profile)
     }
@@ -118,6 +121,15 @@ struct RootView: View {
     }
     .onChange(of: scenePhase) {
       if scenePhase == .active {
+        // Re-prefetch if the calendar day has advanced since last prefetch
+        let currentDay = DayEngine.computeCurrentDayIndex(
+          entries: Array(entries))
+        if let last = lastPrefetchedDayIndex, currentDay != last {
+          PrefetchStore.shared.reset()
+          PrefetchStore.shared.prefetch()
+          lastPrefetchedDayIndex = currentDay
+        }
+
         advanceState()
         syncTask?.cancel()
         syncTask = Task { @MainActor in

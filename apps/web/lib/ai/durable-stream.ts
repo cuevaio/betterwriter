@@ -269,7 +269,7 @@ export async function resolveActiveStream(
   if (meta.status === "running") {
     const staleCutoff = Date.now() - STALE_RUNNING_MS;
     if (meta.updatedAt < staleCutoff) {
-      // Stream appears stuck (server crash / no heartbeat for 10+ min).
+      // Stream appears stuck (server crash / no heartbeat for 2+ min).
       await redis.del(entityLockKey(userId, kind));
       return null;
     }
