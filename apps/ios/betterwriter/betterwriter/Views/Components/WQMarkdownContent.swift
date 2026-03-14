@@ -9,7 +9,7 @@ struct WQMarkdownContent: View {
     Text(MarkdownHelper.attributedString(text))
       .font(Typography.serifBody)
       .lineSpacing(Typography.readingLineSpacing)
-      .foregroundStyle(WQColor.primary)
+      .foregroundColor(WQColor.primary)
       .textSelection(.enabled)
       .frame(maxWidth: .infinity, alignment: .leading)
   }
