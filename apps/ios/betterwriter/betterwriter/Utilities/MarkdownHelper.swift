@@ -6,7 +6,7 @@ enum MarkdownHelper {
   /// Falls back to plain text if parsing fails.
   static func attributedString(_ text: String) -> AttributedString {
     let options = AttributedString.MarkdownParsingOptions(
-      interpretedSyntax: .full
+      interpretedSyntax: .inlineOnlyPreservingWhitespace
     )
     return (try? AttributedString(markdown: text, options: options))
       ?? AttributedString(text)
