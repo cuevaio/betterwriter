@@ -3,8 +3,7 @@ import SwiftUI
 
 struct WriteView: View {
   let dayIndex: Int
-  /// The day whose reading the user is writing about. Retained for state
-  /// machine context; the server resolves this independently.
+  /// The day whose reading the user is writing about.
   let aboutDayIndex: Int
   let onComplete: () -> Void
 
@@ -17,14 +16,11 @@ struct WriteView: View {
   @State private var promptError: String?
   @State private var isLoadingPrompt = true
   @FocusState private var isEditorFocused: Bool
-  // Word-fade streaming state
   @State private var displayedPrompt = ""
-  @State private var pendingPromptChunks: [String] = []
-  @State private var revealTask: Task<Void, Never>?
-  /// Direct reference to the managed entry, set once via modelContext.fetch().
-  /// Avoids @Query timing races that could create duplicate entries.
+  @State private var typewriter = TypewriterAnimator()
+  /// Direct reference to the managed entry.
   @State private var managedEntry: DayEntry?
-  /// Cached word count to avoid re-splitting text on every access.
+  /// Cached word count.
   @State private var wordCount: Int = 0
   /// Debounce task for auto-saving drafts.
   @State private var draftSaveTask: Task<Void, Never>?
@@ -47,24 +43,18 @@ struct WriteView: View {
             Text(displayedPrompt)
               .font(Typography.sansBody)
               .foregroundStyle(WQColor.secondary)
-              .lineSpacing(4)
+              .lineSpacing(Typography.promptLineSpacing)
               .frame(maxWidth: .infinity, alignment: .leading)
           } else if let prompt = prompt {
             Text(prompt)
               .font(Typography.sansBody)
               .foregroundStyle(WQColor.secondary)
-              .lineSpacing(4)
+              .lineSpacing(Typography.promptLineSpacing)
           } else if let promptError {
-            VStack(spacing: Spacing.s) {
-              Text(promptError)
-                .font(Typography.sansCaption)
-                .foregroundStyle(WQColor.secondary)
-              Button("Try again") {
-                isLoadingPrompt = true
-                self.promptError = nil
-                Task { await loadPromptAndDraft() }
-              }
-              .font(Typography.sansButton)
+            WQErrorView(message: promptError) {
+              isLoadingPrompt = true
+              self.promptError = nil
+              Task { await loadPromptAndDraft() }
             }
           }
 
@@ -80,11 +70,11 @@ struct WriteView: View {
 
             TextEditor(text: $userText)
               .font(Typography.serifBody)
-              .lineSpacing(6)
+              .lineSpacing(Typography.editorLineSpacing)
               .foregroundStyle(WQColor.primary)
               .scrollContentBackground(.hidden)
               .focused($isEditorFocused)
-              .frame(minHeight: 300)
+              .frame(minHeight: Spacing.textEditorMinHeight)
               .accessibilityLabel("Writing area")
               .accessibilityHint("Write your response here")
           }
@@ -96,22 +86,25 @@ struct WriteView: View {
 
       // Bottom bar: word count + done button
       VStack(spacing: Spacing.m) {
-        // Word count
         Text("\(wordCount) words")
           .font(Typography.sansCaption)
           .foregroundStyle(WQColor.secondary)
 
-        // Done button
         Button(action: completeWriting) {
           Text("DONE WRITING")
         }
-        .buttonStyle(WQOutlinedButtonStyle())
+        .buttonStyle(WQOutlinedButtonStyle(isFilled: true))
         .accessibilityHint("Mark your writing as complete")
-        .disabled(userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .disabled(
+          userText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty)
       }
       .padding(.horizontal, Spacing.contentHorizontal)
       .padding(.bottom, Spacing.l)
-      .background(.ultraThinMaterial)
+      .background(
+        WQColor.background.opacity(0.9)
+          .background(.ultraThinMaterial)
+      )
     }
     .task {
       await loadPromptAndDraft()
@@ -129,30 +122,8 @@ struct WriteView: View {
     }
   }
 
-  // MARK: - Word-fade animation
-
-  @MainActor
-  private func enqueueTypewriter(_ text: String) {
-    let chunks = TypewriterAnimator.wordChunks(from: text)
-    pendingPromptChunks.append(contentsOf: chunks)
-    guard revealTask == nil || revealTask!.isCancelled else { return }
-    revealTask = Task {
-      while !pendingPromptChunks.isEmpty && !Task.isCancelled {
-        let chunk = pendingPromptChunks.removeFirst()
-        withAnimation(.easeIn(duration: 0.12)) {
-          displayedPrompt += chunk
-        }
-        let delay: UInt64 = chunk.count <= 2 ? 20_000_000 : 40_000_000
-        try? await Task.sleep(nanoseconds: delay)
-      }
-      revealTask = nil
-    }
-  }
-
   // MARK: - Actions
 
-  /// Robustly find or create the entry for this day using a synchronous fetch,
-  /// avoiding the @Query timing race that could return nil right after view mount.
   @MainActor
   private func resolveEntry() -> DayEntry {
     if let existing = managedEntry { return existing }
@@ -172,7 +143,9 @@ struct WriteView: View {
 
     let entry = DayEntry(dayIndex: dayIndex)
     modelContext.insert(entry)
-    do { try modelContext.save() } catch { print("WriteView: save new entry failed: \(error)") }
+    do { try modelContext.save() } catch {
+      print("WriteView: save new entry failed: \(error)")
+    }
     managedEntry = entry
     return entry
   }
@@ -193,91 +166,46 @@ struct WriteView: View {
       return
     }
 
-    // Concurrency guard: prevent duplicate in-flight loads.
+    // Concurrency guard
     let loadKey = "stream.prompt"
     let store = StreamSessionStore.shared
     guard store.beginLoad(key: loadKey) else { return }
     defer { store.endLoad(key: loadKey) }
 
-    var streamedPrompt = ""
-    var completedPrompt: String?
     displayedPrompt = ""
-    pendingPromptChunks = []
-    revealTask?.cancel()
-    revealTask = nil
+    typewriter.cancel()
 
     do {
-      // Step 1: POST — server decides what to do.
-      // No streamId sent; the server owns stream identity.
-      let kickoff = try await APIClient.shared.startPromptStream()
+      let prefetch = PrefetchStore.shared
 
-      if kickoff.mode == "completed", let completedText = kickoff.prompt {
-        // Prompt already generated — display without streaming.
-        prompt = completedText
+      switch prefetch.prompt {
+      case .ready(let promptText):
+        // INSTANT: Pre-fetched prompt. Save + typewriter animate.
+        prompt = promptText
         let promptEntry = resolveEntry()
-        promptEntry.writingPrompt = completedText
+        promptEntry.writingPrompt = promptText
         do { try modelContext.save() } catch {
-          print("WriteView: save completed prompt failed: \(error)")
+          print("WriteView: save prompt failed: \(error)")
         }
         isLoadingPrompt = false
+        typewriter.enqueue(promptText, into: $displayedPrompt, fast: true)
+        await typewriter.waitForCompletion()
         promptError = nil
         return
+
+      case .streaming(let stream):
+        // STREAM: Consume SSE events from pre-fetched stream.
+        try await consumePromptStream(stream)
+        return
+
+      case .failed, .idle, .loading:
+        // Prefetch didn't work. Do a fresh request.
+        try await freshPromptRequest()
+        return
       }
-
-      // Step 2: GET — connect to the SSE stream.
-      let promptEvents = await APIClient.shared.streamPrompt(lastEventId: nil)
-      for try await event in promptEvents {
-        switch event {
-        case .start:
-          break
-        case .delta(let text, _):
-          streamedPrompt += text
-          enqueueTypewriter(text)
-          isLoadingPrompt = false
-        case .complete(let finalPrompt, _):
-          completedPrompt = finalPrompt
-        case .heartbeat:
-          break
-        case .end:
-          break
-        case .error(let message, _):
-          throw NSError(
-            domain: "PromptStream", code: 500,
-            userInfo: [NSLocalizedDescriptionKey: message]
-          )
-        }
-      }
-
-      // Wait for any in-flight word-fade animation to finish.
-      if let task = revealTask { await task.value }
-
-      if let finalPrompt = completedPrompt {
-        prompt = finalPrompt
-        displayedPrompt = ""
-      } else if !streamedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        prompt = streamedPrompt
-        displayedPrompt = ""
-      } else if let fetched = try? await APIClient.shared.getEntry(dayIndex: dayIndex),
-        let fetchedPrompt = fetched.writingPrompt,
-        !fetchedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      {
-        prompt = fetchedPrompt
-      } else {
-        throw NSError(
-          domain: "PromptStream", code: 500,
-          userInfo: [NSLocalizedDescriptionKey: "Prompt stream did not return content"]
-        )
-      }
-
-      // Save prompt locally.
-      let promptEntry = resolveEntry()
-      promptEntry.writingPrompt = prompt
-      do { try modelContext.save() } catch { print("WriteView: save prompt failed: \(error)") }
-
-      isLoadingPrompt = false
-      promptError = nil
     } catch {
       if !retried {
+        PrefetchStore.shared.prompt = .idle
         await loadPromptAndDraft(retried: true)
         return
       }
@@ -288,12 +216,88 @@ struct WriteView: View {
     }
   }
 
+  /// Consume an SSE stream of prompt events, saving the result locally.
+  @MainActor
+  private func consumePromptStream(
+    _ stream: AsyncThrowingStream<PromptStreamEvent, Error>
+  ) async throws {
+    var streamedPrompt = ""
+    var completedPrompt: String?
+
+    for try await event in stream {
+      switch event {
+      case .start:
+        break
+      case .delta(let text, _):
+        streamedPrompt += text
+        typewriter.enqueue(text, into: $displayedPrompt)
+        isLoadingPrompt = false
+      case .complete(let finalPrompt, _):
+        completedPrompt = finalPrompt
+      case .heartbeat, .end:
+        break
+      case .error(let message, _):
+        throw NSError(
+          domain: "PromptStream", code: 500,
+          userInfo: [NSLocalizedDescriptionKey: message]
+        )
+      }
+    }
+
+    await typewriter.waitForCompletion()
+
+    if let finalPrompt = completedPrompt {
+      prompt = finalPrompt
+      displayedPrompt = ""
+    } else if !streamedPrompt.trimmingCharacters(
+      in: .whitespacesAndNewlines
+    ).isEmpty {
+      prompt = streamedPrompt
+      displayedPrompt = ""
+    }
+
+    // Save prompt locally.
+    let promptEntry = resolveEntry()
+    promptEntry.writingPrompt = prompt
+    do { try modelContext.save() } catch {
+      print("WriteView: save prompt failed: \(error)")
+    }
+
+    isLoadingPrompt = false
+    promptError = nil
+  }
+
+  /// Make a fresh generatePrompt() request and process the result.
+  @MainActor
+  private func freshPromptRequest() async throws {
+    let result = try await APIClient.shared.generatePrompt()
+    switch result {
+    case .immediate(let event):
+      if case .complete(let promptText, _) = event {
+        prompt = promptText
+        let promptEntry = resolveEntry()
+        promptEntry.writingPrompt = promptText
+        do { try modelContext.save() } catch {
+          print("WriteView: save prompt failed: \(error)")
+        }
+        isLoadingPrompt = false
+        typewriter.enqueue(promptText, into: $displayedPrompt, fast: true)
+        await typewriter.waitForCompletion()
+        promptError = nil
+      }
+    case .stream(let stream):
+      try await consumePromptStream(stream)
+    }
+  }
+
   @MainActor
   private func saveDraft() {
     guard let entry = managedEntry else { return }
     entry.writingText = userText
     entry.writingWordCount = wordCount
-    do { try modelContext.save() } catch { print("WriteView: saveDraft failed: \(error)") }
+    do { try modelContext.save() } catch {
+      print("WriteView: saveDraft failed: \(error)")
+    }
   }
 
   @MainActor
@@ -309,27 +313,29 @@ struct WriteView: View {
       print("WriteView: completeWriting save failed: \(error)")
     }
 
+    Haptics.success()
+
     // Update profile stats
     if let profile = profile {
       profile.totalWordsWritten += wordCount
 
-      // Handle onboarding completion
       if dayIndex == 0 {
         profile.onboardingDay0Done = true
       } else if dayIndex == 1 {
         profile.onboardingDay1Done = true
 
-        // Request notification permission after day 1
         Task {
-          let granted = await NotificationService.requestAuthorization()
+          let granted =
+            await NotificationService.requestAuthorization()
           if granted {
-            NotificationService.scheduleDailyReminder(dayIndex: dayIndex)
+            NotificationService.scheduleDailyReminder(
+              dayIndex: dayIndex)
           }
         }
       }
 
-      // Update streak based on calendar days completed
-      let streak = DayEngine.calculateStreak(entries: Array(entries))
+      let streak = DayEngine.calculateStreak(
+        entries: Array(entries))
       profile.currentStreak = streak
       if streak > profile.longestStreak {
         profile.longestStreak = streak
@@ -340,7 +346,7 @@ struct WriteView: View {
       }
     }
 
-    // Sync to server and store as memories — server resolves dayIndex
+    // Sync to server
     Task {
       do {
         _ = try await APIClient.shared.updateEntry(
@@ -350,8 +356,6 @@ struct WriteView: View {
             "writingCompleted": true,
           ]
         )
-
-        // Send writing to memory system
         _ = try await APIClient.shared.sendUserInput(text: userText)
       } catch {
         print("WriteView: Failed to sync writing: \(error)")

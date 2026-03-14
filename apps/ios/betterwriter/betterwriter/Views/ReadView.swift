@@ -11,11 +11,8 @@ struct ReadView: View {
 
   @State private var isLoading = true
   @State private var errorMessage: String?
-  @State private var streamedBody = ""
-  // Word-fade streaming state
   @State private var displayedText = ""
-  @State private var pendingChunks: [String] = []
-  @State private var revealTask: Task<Void, Never>?
+  @State private var typewriter = TypewriterAnimator()
 
   private var profile: UserProfile? { profiles.first }
   private var entry: DayEntry? { entries.first { $0.dayIndex == dayIndex } }
@@ -26,13 +23,16 @@ struct ReadView: View {
         Spacer(minLength: Spacing.xxl)
 
         if isLoading {
-          loadingView
+          WQLoadingView(
+            caption: "Finding and streaming today's reading...")
         } else if let error = errorMessage {
-          errorView(error)
+          WQErrorView(message: error) {
+            Task { await loadReading() }
+          }
         } else if !displayedText.isEmpty {
-          markdownContent(text: displayedText)
+          WQMarkdownContent(text: displayedText)
         } else if let entry = entry, let body = entry.readingBody {
-          markdownContent(text: body)
+          WQMarkdownContent(text: body)
         }
 
         Spacer(minLength: Spacing.xxxl)
@@ -51,76 +51,18 @@ struct ReadView: View {
 
   // MARK: - Subviews
 
-  /// Render text as markdown using SwiftUI's built-in AttributedString.
-  /// Handles bold (**), italic (*), links, code, and strikethrough.
-  /// Falls back to plain text if markdown parsing fails.
-  private func markdownContent(text: String) -> some View {
-    Text(MarkdownHelper.attributedString(text))
-      .font(Typography.serifBody)
-      .lineSpacing(6)
-      .foregroundStyle(WQColor.primary)
-      .textSelection(.enabled)
-      .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  /// Split a delta into word-boundary chunks and enqueue them for animated reveal.
-  @MainActor
-  private func enqueueTypewriter(_ text: String) {
-    let chunks = TypewriterAnimator.wordChunks(from: text)
-    pendingChunks.append(contentsOf: chunks)
-    guard revealTask == nil || revealTask!.isCancelled else { return }
-    revealTask = Task {
-      while !pendingChunks.isEmpty && !Task.isCancelled {
-        let chunk = pendingChunks.removeFirst()
-        withAnimation(.easeIn(duration: 0.12)) {
-          displayedText += chunk
-        }
-        let delay: UInt64 = chunk.count <= 2 ? 20_000_000 : 40_000_000
-        try? await Task.sleep(nanoseconds: delay)
-      }
-      revealTask = nil
-    }
-  }
-
-  private var loadingView: some View {
-    VStack(spacing: Spacing.m) {
-      Spacer(minLength: 200)
-      ProgressView()
-        .tint(WQColor.primary)
-        .accessibilityLabel("Loading today's reading")
-      Text("Finding and streaming today's reading...")
-        .font(Typography.sansCaption)
-        .foregroundStyle(WQColor.secondary)
-      Spacer()
-    }
-    .frame(maxWidth: .infinity)
-  }
-
-  private func errorView(_ message: String) -> some View {
-    VStack(spacing: Spacing.m) {
-      Spacer(minLength: 200)
-      Text(message)
-        .font(Typography.sansBody)
-        .foregroundStyle(WQColor.secondary)
-        .multilineTextAlignment(.center)
-      Button("Try again") {
-        Task { await loadReading() }
-      }
-      .font(Typography.sansButton)
-      Spacer()
-    }
-    .frame(maxWidth: .infinity)
-  }
-
   private var doneButton: some View {
     Button(action: completeReading) {
       Text("DONE READING")
     }
-    .buttonStyle(WQOutlinedButtonStyle())
+    .buttonStyle(WQOutlinedButtonStyle(isFilled: true))
     .accessibilityHint("Mark today's reading as complete")
     .padding(.horizontal, Spacing.contentHorizontal)
     .padding(.bottom, Spacing.l)
-    .background(.ultraThinMaterial)
+    .background(
+      WQColor.background.opacity(0.9)
+        .background(.ultraThinMaterial)
+    )
   }
 
   // MARK: - Actions
@@ -141,96 +83,122 @@ struct ReadView: View {
 
     isLoading = true
     errorMessage = nil
-    streamedBody = ""
     displayedText = ""
-    pendingChunks = []
-    revealTask?.cancel()
-    revealTask = nil
+    typewriter.cancel()
 
     do {
-      // Step 1: POST — server decides what to do.
-      // No streamId sent; the server owns stream identity.
-      let kickoff = try await APIClient.shared.startReadingStream()
+      let prefetch = PrefetchStore.shared
 
-      if kickoff.mode == "completed", let completedEntry = kickoff.entry {
-        // Reading already generated — save and display without streaming.
-        let localEntry = entry ?? DayEntry(dayIndex: completedEntry.dayIndex)
-        localEntry.readingBody = completedEntry.readingBody ?? ""
-        if entry == nil { modelContext.insert(localEntry) }
-        try? modelContext.save()
+      switch prefetch.reading {
+      case .ready(let entryResponse):
+        // INSTANT: Data was pre-fetched as JSON. Save + typewriter animate.
+        saveReadingLocally(
+          body: entryResponse.readingBody ?? "",
+          dayIndex: entryResponse.dayIndex
+        )
+        if let body = entryResponse.readingBody, !body.isEmpty {
+          isLoading = false
+          typewriter.enqueue(body, into: $displayedText, fast: true)
+          await typewriter.waitForCompletion()
+        }
         isLoading = false
         return
+
+      case .streaming(let stream):
+        // STREAM: Consume SSE events from pre-fetched stream.
+        try await consumeReadingStream(stream)
+        return
+
+      case .failed, .idle, .loading:
+        // Prefetch didn't work. Do a fresh request.
+        try await freshReadingRequest()
+        return
       }
-
-      // Step 2: GET — connect to the SSE stream.
-      // Server looks up the active stream for this user; no streamId query param needed.
-      var completedEntry: APIClient.EntryResponse?
-      var gotUsableStreamContent = false
-
-      let readingEvents = await APIClient.shared.streamReading(lastEventId: nil)
-      for try await event in readingEvents {
-        switch event {
-        case .start:
-          break
-        case .delta(let text, _):
-          streamedBody += text
-          enqueueTypewriter(text)
-          isLoading = false
-          gotUsableStreamContent = true
-        case .complete(let entryResponse, _):
-          completedEntry = entryResponse
-        case .heartbeat:
-          break
-        case .end:
-          break
-        case .error(let message, _):
-          throw NSError(
-            domain: "ReadStream", code: 500,
-            userInfo: [NSLocalizedDescriptionKey: message]
-          )
-        }
-      }
-
-      // Wait for any in-flight word-fade animation to finish.
-      if let task = revealTask { await task.value }
-
-      if let response = completedEntry {
-        let localEntry = entry ?? DayEntry(dayIndex: response.dayIndex)
-        localEntry.readingBody = response.readingBody ?? streamedBody
-        if entry == nil { modelContext.insert(localEntry) }
-        try? modelContext.save()
-      } else if gotUsableStreamContent {
-        let localEntry = entry ?? DayEntry(dayIndex: dayIndex)
-        localEntry.readingBody = streamedBody
-        if entry == nil { modelContext.insert(localEntry) }
-        try? modelContext.save()
-      } else if let fetched = try? await APIClient.shared.getEntry(dayIndex: dayIndex),
-        let fetchedBody = fetched.readingBody,
-        !fetchedBody.isEmpty
-      {
-        let localEntry = entry ?? DayEntry(dayIndex: dayIndex)
-        localEntry.readingBody = fetchedBody
-        if entry == nil { modelContext.insert(localEntry) }
-        try? modelContext.save()
-      } else {
-        throw NSError(
-          domain: "ReadStream", code: 500,
-          userInfo: [NSLocalizedDescriptionKey: "Reading stream did not return content"]
-        )
-      }
-
-      streamedBody = ""
-      displayedText = ""
-      isLoading = false
     } catch {
       if !retried {
+        PrefetchStore.shared.reading = .idle
         await loadReading(retried: true)
         return
       }
-      errorMessage = "Couldn't load today's reading. Check your connection."
+      errorMessage =
+        "Couldn't load today's reading. Check your connection."
       isLoading = false
       print("ReadView: Failed to load reading: \(error)")
     }
+  }
+
+  /// Consume an SSE stream of reading events, saving the result locally.
+  @MainActor
+  private func consumeReadingStream(
+    _ stream: AsyncThrowingStream<ReadingStreamEvent, Error>
+  ) async throws {
+    var completedEntry: APIClient.EntryResponse?
+    var streamedBody = ""
+
+    for try await event in stream {
+      switch event {
+      case .start:
+        break
+      case .delta(let text, _):
+        streamedBody += text
+        typewriter.enqueue(text, into: $displayedText)
+        isLoading = false
+      case .complete(let entry, _):
+        completedEntry = entry
+      case .heartbeat, .end:
+        break
+      case .error(let message, _):
+        throw NSError(
+          domain: "ReadStream", code: 500,
+          userInfo: [NSLocalizedDescriptionKey: message]
+        )
+      }
+    }
+
+    await typewriter.waitForCompletion()
+
+    if let response = completedEntry {
+      saveReadingLocally(
+        body: response.readingBody ?? streamedBody,
+        dayIndex: response.dayIndex
+      )
+    } else if !streamedBody.isEmpty {
+      saveReadingLocally(body: streamedBody, dayIndex: dayIndex)
+    }
+
+    isLoading = false
+  }
+
+  /// Make a fresh generateReading() request and process the result.
+  @MainActor
+  private func freshReadingRequest() async throws {
+    let result = try await APIClient.shared.generateReading()
+    switch result {
+    case .immediate(let event):
+      if case .complete(let entryResponse, _) = event {
+        saveReadingLocally(
+          body: entryResponse.readingBody ?? "",
+          dayIndex: entryResponse.dayIndex
+        )
+        if let body = entryResponse.readingBody, !body.isEmpty {
+          isLoading = false
+          typewriter.enqueue(body, into: $displayedText, fast: true)
+          await typewriter.waitForCompletion()
+        }
+        isLoading = false
+      }
+    case .stream(let stream):
+      try await consumeReadingStream(stream)
+    }
+  }
+
+  /// Save readingBody to the local SwiftData entry.
+  @MainActor
+  private func saveReadingLocally(body: String, dayIndex: Int) {
+    let localEntry = entry ?? DayEntry(dayIndex: dayIndex)
+    localEntry.readingBody = body
+    if entry == nil { modelContext.insert(localEntry) }
+    try? modelContext.save()
   }
 
   @MainActor
@@ -240,7 +208,8 @@ struct ReadView: View {
     entry.needsSync = true
     try? modelContext.save()
 
-    // Sync to server — server resolves which entry to update
+    Haptics.medium()
+
     Task {
       do {
         _ = try await APIClient.shared.updateEntry(

@@ -11,6 +11,7 @@ struct RootView: View {
   @State private var currentPhase: AppPhase = .loading
   @State private var resolvedProfile: UserProfile?
   @State private var syncTask: Task<Void, Never>?
+  @State private var loadingPulse = false
 
   private var profile: UserProfile? { profiles.first }
 
@@ -21,12 +22,16 @@ struct RootView: View {
         loadingView
 
       case .read(let dayIndex):
-        ReadView(dayIndex: dayIndex, onComplete: { advanceState() })
-          .transition(
-            .asymmetric(
-              insertion: .opacity.combined(with: .move(edge: .trailing)),
-              removal: .opacity.combined(with: .move(edge: .leading))
-            ))
+        ReadView(
+          dayIndex: dayIndex, onComplete: { advanceState() }
+        )
+        .transition(
+          .asymmetric(
+            insertion: .move(edge: .trailing).combined(
+              with: .opacity),
+            removal: .move(edge: .leading).combined(
+              with: .opacity)
+          ))
 
       case .write(let dayIndex, let aboutDayIndex):
         WriteView(
@@ -36,33 +41,50 @@ struct RootView: View {
         )
         .transition(
           .asymmetric(
-            insertion: .opacity.combined(with: .move(edge: .trailing)),
-            removal: .opacity.combined(with: .move(edge: .leading))
+            insertion: .move(edge: .trailing).combined(
+              with: .opacity),
+            removal: .move(edge: .leading).combined(
+              with: .opacity)
           ))
 
       case .done(let dayIndex):
         DoneView(
           dayIndex: dayIndex,
-          onBonusRead: { currentPhase = .bonusRead(dayIndex: dayIndex) },
-          onFreeWrite: { currentPhase = .freeWrite(dayIndex: dayIndex) }
+          onBonusRead: {
+            currentPhase = .bonusRead(dayIndex: dayIndex)
+          },
+          onFreeWrite: {
+            currentPhase = .freeWrite(dayIndex: dayIndex)
+          }
         )
-        .transition(.opacity)
+        .transition(
+          .opacity.animation(.easeInOut(duration: 0.4)))
 
       case .bonusRead(let dayIndex):
         BonusReadView(
           dayIndex: dayIndex,
-          onBack: { currentPhase = .done(dayIndex: dayIndex) },
-          onComplete: { currentPhase = .done(dayIndex: dayIndex) }
+          onBack: {
+            currentPhase = .done(dayIndex: dayIndex)
+          },
+          onComplete: {
+            currentPhase = .done(dayIndex: dayIndex)
+          }
         )
-        .transition(.opacity)
+        .transition(
+          .move(edge: .bottom).combined(with: .opacity))
 
       case .freeWrite(let dayIndex):
         FreeWriteView(
           dayIndex: dayIndex,
-          onBack: { currentPhase = .done(dayIndex: dayIndex) },
-          onComplete: { currentPhase = .done(dayIndex: dayIndex) }
+          onBack: {
+            currentPhase = .done(dayIndex: dayIndex)
+          },
+          onComplete: {
+            currentPhase = .done(dayIndex: dayIndex)
+          }
         )
-        .transition(.opacity)
+        .transition(
+          .move(edge: .bottom).combined(with: .opacity))
       }
     }
     .safeAreaInset(edge: .top) {
@@ -75,13 +97,20 @@ struct RootView: View {
       .padding(.bottom, Spacing.xs)
       .background(WQColor.background)
     }
-    .animation(.easeInOut(duration: 0.5), value: currentPhase)
+    .animation(
+      .spring(response: 0.5, dampingFraction: 0.85),
+      value: currentPhase
+    )
     .task {
       let profile = await ensureProfile()
       resolvedProfile = profile
+
+      // Pre-fetch both reading and prompt in parallel so views
+      // have data ready immediately when the user navigates.
+      PrefetchStore.shared.prefetch()
+
       advanceState(profileOverride: profile)
     }
-    // Re-evaluate whenever SwiftData queries update (profiles loads asynchronously)
     .onChange(of: profiles) {
       if currentPhase == .loading {
         advanceState()
@@ -90,7 +119,6 @@ struct RootView: View {
     .onChange(of: scenePhase) {
       if scenePhase == .active {
         advanceState()
-        // Sync any pending entries when app comes to foreground
         syncTask?.cancel()
         syncTask = Task { @MainActor in
           await SyncService.shared.syncPendingEntries(
@@ -103,23 +131,31 @@ struct RootView: View {
     }
   }
 
+  // MARK: - Loading View (wordmark removed — the safeAreaInset provides it)
+
   private var loadingView: some View {
     VStack(spacing: Spacing.l) {
       Spacer()
-      BrandWordmarkView()
       ProgressView()
         .tint(WQColor.primary)
       Text("warming up your next page")
         .font(Typography.sansCaption)
         .foregroundStyle(WQColor.secondary)
+        .opacity(loadingPulse ? 0.5 : 1.0)
+        .animation(
+          .easeInOut(duration: 1.5)
+            .repeatForever(autoreverses: true),
+          value: loadingPulse
+        )
+        .onAppear { loadingPulse = true }
       Spacer()
     }
   }
 
+  // MARK: - State Management
+
   @discardableResult
   private func ensureProfile() async -> UserProfile {
-    // Use direct fetch instead of @Query to avoid timing race where
-    // @Query hasn't picked up a just-inserted profile yet.
     let descriptor = FetchDescriptor<UserProfile>()
     if let existing = try? modelContext.fetch(descriptor).first {
       return existing
@@ -131,9 +167,6 @@ struct RootView: View {
       print("RootView: Failed to save new profile: \(error)")
     }
 
-    // Await auth so the user row exists on the server before any other API calls.
-    // Without this, the app would race ahead to reading/writing streams while the
-    // user record hasn't been created yet, causing FK constraint failures.
     do {
       _ = try await APIClient.shared.authenticate(
         installDate: newProfile.installDate)
@@ -145,11 +178,12 @@ struct RootView: View {
   }
 
   private func advanceState(profileOverride: UserProfile? = nil) {
-    // Don't interrupt overlay sessions (e.g. when app foregrounds)
+    // Don't interrupt overlay sessions
     if case .freeWrite = currentPhase { return }
     if case .bonusRead = currentPhase { return }
 
-    let effectiveProfile = profileOverride ?? resolvedProfile ?? profile
+    let effectiveProfile =
+      profileOverride ?? resolvedProfile ?? profile
 
     let resolved = DayEngine.resolveCurrentPhase(
       profile: effectiveProfile,

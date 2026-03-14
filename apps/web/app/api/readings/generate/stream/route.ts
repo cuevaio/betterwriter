@@ -5,13 +5,12 @@ import {
   acquireEntityLock,
   createHeartbeat,
   emitDurableEvent,
-  getActiveStreamId,
   initDurableStream,
   releaseEntityLock,
   resolveActiveStream,
 } from "@/lib/ai/durable-stream";
 import { generateReadingStream } from "@/lib/ai/reading";
-import { createDurableSSEResponse } from "@/lib/api/durable-sse";
+import { createInlineSSEResponse, serializeEntry } from "@/lib/api/durable-sse";
 import { requireUserId } from "@/lib/auth";
 import { getCurrentDayIndex, getNextBonusDayIndex } from "@/lib/day-index";
 import { db } from "@/lib/db";
@@ -20,21 +19,6 @@ import { entries, users } from "@/lib/db/schema";
 const qstash = new Client({
   token: process.env.QSTASH_TOKEN as string,
 });
-
-// GET /api/readings/generate/stream — Replay + live durable SSE stream.
-// The server looks up the active streamId for this user so the client
-// does not need to track or send it.
-export async function GET(request: Request) {
-  const userId = await requireUserId(request);
-  const streamId = await getActiveStreamId(userId, "reading");
-  if (!streamId) {
-    return Response.json(
-      { error: "No active reading stream" },
-      { status: 404 }
-    );
-  }
-  return createDurableSSEResponse(request, streamId);
-}
 
 interface ReadingGenerationPayload {
   userId: string;
@@ -55,7 +39,6 @@ async function resolveReadingDayIndex(userId: string): Promise<{
 }> {
   const currentDayIndex = await getCurrentDayIndex(userId);
 
-  // Check if the current day already has a reading generated
   const existing = await db
     .select({ readingBody: entries.readingBody })
     .from(entries)
@@ -74,7 +57,6 @@ async function resolveReadingDayIndex(userId: string): Promise<{
     };
   }
 
-  // Current day already has a reading — this is a bonus
   const bonusDayIndex = await getNextBonusDayIndex(userId);
   return { dayIndex: bonusDayIndex, isBonusReading: true, currentDayIndex };
 }
@@ -147,22 +129,16 @@ async function runReadingGeneration(payload: ReadingGenerationPayload) {
       })
       .returning();
 
-    const completionPayload = {
-      id: row.id,
-      userId: row.userId,
-      dayIndex: row.dayIndex,
-      calendarDate: row.calendarDate,
-      readingBody: row.readingBody ?? null,
-      isBonusReading: row.isBonusReading ?? false,
-      writingPrompt: row.writingPrompt ?? null,
-      writingText: row.writingText ?? null,
-      writingWordCount: row.writingWordCount ?? null,
-    };
-
     await heartbeat.stop();
-    await emitDurableEvent(streamId, "complete", completionPayload);
-    // NOTE: entity lock is intentionally NOT released on success.
-    // It stays alive (TTL 24h) so GET can always find the active/completed stream.
+    await emitDurableEvent(streamId, "complete", {
+      entry: serializeEntry(row),
+    });
+
+    // Release lock after a short grace period so the inline SSE tail
+    // has time to drain the complete event before the lock disappears.
+    setTimeout(() => {
+      releaseEntityLock(userId, "reading", streamId).catch(() => {});
+    }, 5000);
   } catch (error) {
     await heartbeat.stop();
     await emitDurableEvent(streamId, "error", {
@@ -170,7 +146,6 @@ async function runReadingGeneration(payload: ReadingGenerationPayload) {
         error instanceof Error ? error.message : "Failed to stream reading",
       streamId,
     });
-    // Release lock on error so the next POST can start a fresh generation.
     await releaseEntityLock(userId, "reading", streamId);
     throw error;
   }
@@ -178,15 +153,13 @@ async function runReadingGeneration(payload: ReadingGenerationPayload) {
 
 const { POST: workflowPOST } = serve(async (workflow) => {
   await workflow.run("reading-generation", async () => {
-    // dayIndex, isBonusReading, and currentDayIndex are pre-resolved and included
-    // in the payload so the workflow step doesn't need to re-query the DB.
     const payload = workflow.requestPayload as ReadingGenerationPayload;
     await runReadingGeneration(payload);
   });
 });
 
-// POST /api/readings/generate/stream — Kick off durable reading generation.
-// The client sends no body; the server owns stream identity.
+// POST /api/readings/generate/stream — Unified endpoint.
+// Returns 200 JSON when data exists in DB, 202 SSE stream when generating.
 export async function POST(request: Request) {
   const hasQstashSignature = Boolean(request.headers.get("upstash-signature"));
   const hasQstashSigningKeys =
@@ -198,65 +171,12 @@ export async function POST(request: Request) {
     return workflowPOST(request);
   }
 
-  // All user-initiated requests (both dev and production initial call):
   const userId = await requireUserId(request);
 
-  // Step 1: Check for an existing active stream for this user.
-  const active = await resolveActiveStream(userId, "reading");
-  if (active) {
-    if (active.meta.status === "running") {
-      return Response.json(
-        { ok: true, mode: "already-running" },
-        { status: 200 }
-      );
-    }
-    if (active.meta.status === "completed") {
-      // Stream completed — check whether the user has already finished
-      // reading this entry. If so, the lock is stale and we release it
-      // so a new reading (bonus or next day) can be generated.
-      const lockedDayIndex = active.meta.params.dayIndex as number;
-      const rows = await db
-        .select()
-        .from(entries)
-        .where(
-          and(eq(entries.userId, userId), eq(entries.dayIndex, lockedDayIndex))
-        )
-        .limit(1);
-      if (rows.length > 0 && rows[0].readingBody !== null) {
-        if (rows[0].readingCompleted) {
-          // User finished this reading — release so next generation can start.
-          await releaseEntityLock(userId, "reading", active.streamId);
-        } else {
-          // User hasn't finished reading — return the entry (reconnection).
-          return Response.json(
-            {
-              ok: true,
-              mode: "completed",
-              entry: {
-                id: rows[0].id,
-                userId: rows[0].userId,
-                dayIndex: rows[0].dayIndex,
-                calendarDate: rows[0].calendarDate,
-                readingBody: rows[0].readingBody,
-                isBonusReading: rows[0].isBonusReading ?? false,
-                writingPrompt: rows[0].writingPrompt ?? null,
-                writingText: rows[0].writingText ?? null,
-                writingWordCount: rows[0].writingWordCount ?? null,
-              },
-            },
-            { status: 200 }
-          );
-        }
-      } else {
-        // Stream completed but DB has no data — clear stale lock.
-        await releaseEntityLock(userId, "reading", active.streamId);
-      }
-    }
-  }
-
-  // Step 2: Check if reading already exists in DB for the resolved day.
+  // STEP 1: DB-FIRST — always check if data already exists.
   const { dayIndex, isBonusReading, currentDayIndex } =
     await resolveReadingDayIndex(userId);
+
   const existingRows = await db
     .select()
     .from(entries)
@@ -265,35 +185,55 @@ export async function POST(request: Request) {
 
   if (existingRows.length > 0 && existingRows[0].readingBody !== null) {
     return Response.json(
-      {
-        ok: true,
-        mode: "completed",
-        entry: {
-          id: existingRows[0].id,
-          userId: existingRows[0].userId,
-          dayIndex: existingRows[0].dayIndex,
-          calendarDate: existingRows[0].calendarDate,
-          readingBody: existingRows[0].readingBody,
-          isBonusReading: existingRows[0].isBonusReading ?? false,
-          writingPrompt: existingRows[0].writingPrompt ?? null,
-          writingText: existingRows[0].writingText ?? null,
-          writingWordCount: existingRows[0].writingWordCount ?? null,
-        },
-      },
+      { entry: serializeEntry(existingRows[0]) },
       { status: 200 }
     );
   }
 
-  // Step 3: Start a new generation. Server generates the streamId.
+  // STEP 2: Check if a generation is already in-flight.
+  const active = await resolveActiveStream(userId, "reading");
+
+  if (active && active.meta.status === "running") {
+    // Tail the existing generation with DB fallback.
+    return createInlineSSEResponse(
+      active.streamId,
+      userId,
+      dayIndex,
+      "reading"
+    );
+  }
+
+  if (active && active.meta.status === "completed") {
+    // Race: generation may have completed between step 1 and now.
+    const rows = await db
+      .select()
+      .from(entries)
+      .where(
+        and(
+          eq(entries.userId, userId),
+          eq(entries.dayIndex, active.meta.params.dayIndex as number)
+        )
+      )
+      .limit(1);
+    if (rows.length > 0 && rows[0].readingBody !== null) {
+      return Response.json({ entry: serializeEntry(rows[0]) }, { status: 200 });
+    }
+    // Stale completed lock without DB data — release and regenerate.
+    await releaseEntityLock(userId, "reading", active.streamId);
+  }
+
+  // STEP 3: Start a new generation.
   const streamId = crypto.randomUUID();
-  const { acquired } = await acquireEntityLock(userId, "reading", streamId);
+  const { acquired, activeStreamId } = await acquireEntityLock(
+    userId,
+    "reading",
+    streamId,
+    300
+  );
 
   if (!acquired) {
-    // Lost a race with a concurrent request — the other request won the lock.
-    return Response.json(
-      { ok: true, mode: "already-running" },
-      { status: 200 }
-    );
+    // Lost the race — tail the winner's stream.
+    return createInlineSSEResponse(activeStreamId, userId, dayIndex, "reading");
   }
 
   const payload: ReadingGenerationPayload = {
@@ -304,27 +244,34 @@ export async function POST(request: Request) {
     currentDayIndex,
   };
 
+  // Dispatch generation.
   if (process.env.NODE_ENV !== "production" && hasQstashSigningKeys) {
-    // Direct-dev path: run in-process as a fire-and-forget.
     void runReadingGeneration(payload).catch((error) => {
       console.error("Direct-dev reading stream failed", { streamId, error });
     });
-    return Response.json({ ok: true, mode: "started" }, { status: 202 });
+  } else {
+    const proto = request.headers.get("x-forwarded-proto") || "https";
+    const host = request.headers.get("host") || "localhost:3000";
+    const callbackUrl = `${proto}://${host}/api/readings/generate/stream`;
+
+    try {
+      await qstash.publishJSON({
+        url: callbackUrl,
+        body: payload,
+        headers: {
+          Authorization: request.headers.get("Authorization") || "",
+        },
+      });
+    } catch (error) {
+      await releaseEntityLock(userId, "reading", streamId);
+      console.error("QStash publish failed", error);
+      return Response.json(
+        { error: "Failed to start generation" },
+        { status: 500 }
+      );
+    }
   }
 
-  // Production path: publish to QStash so it calls back to this endpoint
-  // with a valid upstash-signature. The serve() handler then verifies the
-  // signature and orchestrates the workflow steps.
-  const proto = request.headers.get("x-forwarded-proto") || "https";
-  const host = request.headers.get("host") || "localhost:3000";
-  const callbackUrl = `${proto}://${host}/api/readings/generate/stream`;
-
-  await qstash.publishJSON({
-    url: callbackUrl,
-    body: payload,
-    headers: {
-      Authorization: request.headers.get("Authorization") || "",
-    },
-  });
-  return Response.json({ ok: true, mode: "started" }, { status: 202 });
+  // Return SSE stream that tails the generation with DB fallback.
+  return createInlineSSEResponse(streamId, userId, dayIndex, "reading");
 }

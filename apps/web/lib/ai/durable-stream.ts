@@ -26,7 +26,7 @@ export interface DurableStreamMeta {
 }
 
 const DEFAULT_TTL_SECONDS = Number(
-  process.env.DURABLE_STREAM_TTL_SECONDS ?? 60 * 60 * 24
+  process.env.DURABLE_STREAM_TTL_SECONDS ?? 300
 );
 
 const keys = (streamId: string) => ({
@@ -172,8 +172,8 @@ export function parseCursor(value: string | null | undefined) {
 // ---------------------------------------------------------------------------
 // Entity-level dedup lock
 // Keyed on (userId, kind) — one active stream per user per kind.
-// The lock is NOT released on successful completion; it stays until TTL or
-// a new generation claims it. This lets GET always find the active stream.
+// The lock is released shortly after successful completion (grace period for
+// the inline SSE tail to drain), and immediately on error.
 // ---------------------------------------------------------------------------
 
 const entityLockKey = (userId: string, kind: string) =>
@@ -231,7 +231,7 @@ export async function getActiveStreamId(
 
 // How long without a heartbeat before we consider a running stream stale
 // (indicates server crash / unclean shutdown).
-const STALE_RUNNING_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_RUNNING_MS = 2 * 60 * 1000; // 2 minutes
 
 /**
  * Resolve the active stream for a user+kind, validating that it is still alive.

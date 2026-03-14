@@ -1,131 +1,231 @@
+import { and, eq } from "drizzle-orm";
 import {
+  type DurableEventName,
   getDurableStreamMeta,
   listDurableEventsSince,
-  parseCursor,
   waitForDurableStreamMeta,
 } from "@/lib/ai/durable-stream";
 import { sseHeaders, writeSSE, writeSSEComment } from "@/lib/ai/streaming";
-import { requireUserId } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { type Entry, entries } from "@/lib/db/schema";
 
 /**
- * Create a durable SSE response that replays past events and live-tails new ones.
- * Shared by both the readings and prompts stream GET handlers.
- *
- * @param resolvedStreamId - If provided, use this streamId directly instead of reading
- *   it from the query params. Route handlers that look up the active stream server-side
- *   should pass it here.
+ * Serialize an entry row for JSON/SSE responses.
  */
-export async function createDurableSSEResponse(
-  request: Request,
-  resolvedStreamId?: string
+export function serializeEntry(row: Entry) {
+  return {
+    id: row.id,
+    userId: row.userId,
+    dayIndex: row.dayIndex,
+    calendarDate: row.calendarDate,
+    readingBody: row.readingBody ?? null,
+    readingCompleted: row.readingCompleted ?? false,
+    isBonusReading: row.isBonusReading ?? false,
+    writingPrompt: row.writingPrompt ?? null,
+    writingText: row.writingText ?? null,
+    writingWordCount: row.writingWordCount ?? null,
+    writingCompleted: row.writingCompleted ?? false,
+    isFreeWrite: row.isFreeWrite ?? false,
+    skipped: row.skipped ?? false,
+  };
+}
+
+/**
+ * Check DB for completed data for a given user+dayIndex+kind.
+ */
+async function checkDBForCompletion(
+  userId: string,
+  dayIndex: number,
+  kind: "reading" | "prompt"
+): Promise<Entry | null> {
+  const rows = await db
+    .select()
+    .from(entries)
+    .where(and(eq(entries.userId, userId), eq(entries.dayIndex, dayIndex)))
+    .limit(1);
+
+  if (rows.length === 0) return null;
+  const row = rows[0];
+
+  if (kind === "reading" && row.readingBody !== null) return row;
+  if (kind === "prompt" && row.writingPrompt !== null) return row;
+  return null;
+}
+
+/**
+ * Create an SSE response that tails a durable stream inline in the POST
+ * response. Includes DB fallback: if Redis events stall, periodically
+ * checks whether the DB already has the completed data.
+ *
+ * Returns a 202 streaming response with SSE headers.
+ */
+export async function createInlineSSEResponse(
+  streamId: string,
+  userId: string,
+  dayIndex: number,
+  kind: "reading" | "prompt"
 ): Promise<Response> {
-  const userId = await requireUserId(request);
-  const { searchParams } = new URL(request.url);
-  const streamId = resolvedStreamId ?? searchParams.get("streamId");
-
-  if (!streamId) {
-    return new Response(JSON.stringify({ error: "streamId is required" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const cursor = parseCursor(
-    request.headers.get("Last-Event-ID") ?? searchParams.get("cursor")
-  );
   let cancelled = false;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let lastSent = cursor;
+      let lastSent = 0;
       let closed = false;
       const sleep = (ms: number) =>
         new Promise((resolve) => setTimeout(resolve, ms));
-      const send = (
-        id: number,
-        event: "start" | "delta" | "complete" | "error" | "heartbeat",
-        data: unknown
-      ) => {
+
+      const send = (id: number, event: DurableEventName, data: unknown) => {
         if (id <= lastSent || closed) return;
         lastSent = id;
         writeSSE(controller, event, data, id);
         if (event === "complete" || event === "error") {
           closed = true;
-          controller.close();
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
         }
       };
-      const sendEnd = (status: "completed" | "errored") => {
+
+      const emitDBComplete = (entry: Entry) => {
         if (closed) return;
-        writeSSE(controller, "end", { status, streamId }, `end-${lastSent}`);
+        writeSSE(
+          controller,
+          "complete",
+          { entry: serializeEntry(entry) },
+          "db-fallback"
+        );
         closed = true;
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
       };
 
       writeSSEComment(controller, "connected");
 
-      const meta = await waitForDurableStreamMeta(streamId);
+      // Wait for stream metadata to appear (QStash has latency)
+      const meta = await waitForDurableStreamMeta(streamId, 5000);
+
       if (cancelled || closed) return;
 
+      // If stream meta never appeared, check DB as fallback
       if (!meta) {
+        const dbEntry = await checkDBForCompletion(userId, dayIndex, kind);
+        if (dbEntry) {
+          emitDBComplete(dbEntry);
+          return;
+        }
         writeSSE(controller, "error", {
-          message: "stream not found",
-          streamId,
+          message: "Generation did not start in time",
         });
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
         return;
       }
 
       if (meta.userId !== userId) {
         writeSSE(controller, "error", { message: "forbidden", streamId });
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
         return;
       }
 
-      const replay = await listDurableEventsSince(streamId, cursor);
+      // Replay any already-emitted events
+      const replay = await listDurableEventsSince(streamId, 0);
       for (const frame of replay) {
         send(frame.id, frame.event, frame.data);
         if (closed) return;
       }
 
-      if (
-        !closed &&
-        replay.length === 0 &&
-        (meta.status === "completed" || meta.status === "errored")
-      ) {
-        sendEnd(meta.status === "completed" ? "completed" : "errored");
-        return;
-      }
-
-      // Adaptive polling: start fast, back off when idle, reset on activity
+      // Live-tail with DB fallback
       let idleCount = 0;
-      const MIN_POLL_MS = 50;
-      const MAX_POLL_MS = 500;
+      let lastActivityAt = Date.now();
+      const DB_FALLBACK_INTERVAL_MS = 3000;
+      const MAX_STALL_MS = 120_000; // 2 min hard timeout
 
-      while (!closed) {
-        if (cancelled) return;
+      while (!closed && !cancelled) {
         const next = await listDurableEventsSince(streamId, lastSent);
 
         if (next.length > 0) {
           idleCount = 0;
+          lastActivityAt = Date.now();
           for (const frame of next) {
             send(frame.id, frame.event, frame.data);
             if (closed) return;
           }
         } else {
           idleCount++;
+
+          // Check stream meta for terminal state
           const latestMeta = await getDurableStreamMeta(streamId);
           if (
             latestMeta?.status === "completed" ||
             latestMeta?.status === "errored"
           ) {
-            sendEnd(
-              latestMeta.status === "completed" ? "completed" : "errored"
-            );
+            // Drain any remaining events
+            const remaining = await listDurableEventsSince(streamId, lastSent);
+            for (const frame of remaining) {
+              send(frame.id, frame.event, frame.data);
+              if (closed) return;
+            }
+            // If we still haven't closed (no complete/error event found),
+            // fall back to DB
+            if (!closed) {
+              const dbEntry = await checkDBForCompletion(
+                userId,
+                dayIndex,
+                kind
+              );
+              if (dbEntry) {
+                emitDBComplete(dbEntry);
+                return;
+              }
+              writeSSE(controller, "error", {
+                message: "Stream ended without data",
+              });
+              try {
+                controller.close();
+              } catch {
+                /* already closed */
+              }
+            }
+            return;
+          }
+
+          // Periodic DB fallback when stream is idle
+          const stallDuration = Date.now() - lastActivityAt;
+          if (stallDuration > DB_FALLBACK_INTERVAL_MS) {
+            const dbEntry = await checkDBForCompletion(userId, dayIndex, kind);
+            if (dbEntry) {
+              emitDBComplete(dbEntry);
+              return;
+            }
+          }
+
+          // Hard timeout
+          if (stallDuration > MAX_STALL_MS) {
+            writeSSE(controller, "error", {
+              message: "Generation timed out",
+            });
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
             return;
           }
         }
 
-        const delay = Math.min(MIN_POLL_MS * 1.5 ** idleCount, MAX_POLL_MS);
+        const delay = Math.min(50 * 1.5 ** idleCount, 500);
         await sleep(delay);
       }
     },
@@ -134,5 +234,5 @@ export async function createDurableSSEResponse(
     },
   });
 
-  return new Response(stream, { headers: sseHeaders() });
+  return new Response(stream, { status: 202, headers: sseHeaders() });
 }

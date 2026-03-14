@@ -99,22 +99,9 @@ actor APIClient {
     return try await put("/api/users", body: fields)
   }
 
-  // MARK: - Stream kickoff response
+  // MARK: - Entry Response
 
-  struct StartStreamResponse: Codable {
-    let ok: Bool
-    let mode: String
-    /// Present when mode is "started" or "already-running". Nil when mode is "completed".
-    let streamId: String?
-    /// Present when mode is "completed" for readings.
-    let entry: EntryResponse?
-    /// Present when mode is "completed" for prompts.
-    let prompt: String?
-  }
-
-  // MARK: - Readings
-
-  struct EntryResponse: Codable {
+  struct EntryResponse: Codable, Sendable {
     let id: String
     let userId: String
     let dayIndex: Int
@@ -130,107 +117,202 @@ actor APIClient {
     let skipped: Bool?
   }
 
-  /// Kick off a reading stream. The server owns stream identity.
-  @discardableResult
-  func startReadingStream() async throws -> StartStreamResponse {
-    return try await post("/api/readings/generate/stream", body: [:])
+  // MARK: - Unified Generate Methods
+
+  /// Result from a generate endpoint: either immediate JSON data or an SSE stream.
+  enum GenerateResult<T: Sendable>: Sendable {
+    case immediate(T)
+    case stream(AsyncThrowingStream<T, Error>)
   }
 
-  func streamReading(
-    lastEventId: String? = nil
-  ) -> AsyncThrowingStream<ReadingStreamEvent, Error> {
-    streamSSE(
-      path: "/api/readings/generate/stream",
-      label: "reading",
-      lastEventId: lastEventId
-    ) { eventType, data, eventId in
-      switch eventType {
-      case "start":
-        return (.start(eventId: eventId), false)
-      case "delta":
-        if let text = Self.extractStringValue(fromJSON: data, key: "text") {
-          return (.delta(text, eventId: eventId), false)
-        }
-        return nil
-      case "complete":
-        if let payload = Self.extractJSONObjectData(fromJSON: data),
-          let entry = try? JSONDecoder().decode(EntryResponse.self, from: payload)
-        {
-          return (.complete(entry, eventId: eventId), true)
-        }
-        return (.end(status: "completed", eventId: eventId), true)
-      case "end":
-        let status =
-          Self.extractStringValue(fromJSON: data, key: "status") ?? "completed"
-        return (.end(status: status, eventId: eventId), true)
-      case "heartbeat":
-        return (.heartbeat(eventId: eventId), false)
-      case "error":
-        let message =
-          Self.extractStringValue(fromJSON: data, key: "message")
-          ?? "Unknown stream error"
-        return (.error(message, eventId: eventId), true)
-      default:
-        return nil
-      }
+  /// Request today's reading. Returns immediately with cached data (200 JSON)
+  /// or streams generation events (202 SSE).
+  func generateReading() async throws -> GenerateResult<ReadingStreamEvent> {
+    try await ensureAuthenticated()
+
+    let url = URL(string: "\(baseURL)/api/readings/generate/stream")!
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: [:] as [String: Any])
+    if let auth = authorizationHeader {
+      request.setValue(auth, forHTTPHeaderField: "Authorization")
     }
-  }
+    request.timeoutInterval = 120
 
-  // MARK: - Prompts
-
-  /// Kick off a prompt stream. The server owns stream identity.
-  @discardableResult
-  func startPromptStream() async throws -> StartStreamResponse {
-    return try await post("/api/prompts/generate/stream", body: [:])
-  }
-
-  func streamPrompt(
-    lastEventId: String? = nil
-  ) -> AsyncThrowingStream<PromptStreamEvent, Error> {
-    streamSSE(
-      path: "/api/prompts/generate/stream",
-      label: "prompt",
-      lastEventId: lastEventId
-    ) { eventType, data, eventId in
-      switch eventType {
-      case "start":
-        return (.start(eventId: eventId), false)
-      case "delta":
-        if let text = Self.extractStringValue(fromJSON: data, key: "text") {
-          return (.delta(text, eventId: eventId), false)
-        }
-        return nil
-      case "complete":
-        if let prompt = Self.extractStringValue(fromJSON: data, key: "prompt") {
-          return (.complete(prompt, eventId: eventId), true)
-        }
-        return (.end(status: "completed", eventId: eventId), true)
-      case "end":
-        let status =
-          Self.extractStringValue(fromJSON: data, key: "status") ?? "completed"
-        return (.end(status: status, eventId: eventId), true)
-      case "heartbeat":
-        return (.heartbeat(eventId: eventId), false)
-      case "error":
-        let message =
-          Self.extractStringValue(fromJSON: data, key: "message")
-          ?? "Unknown stream error"
-        return (.error(message, eventId: eventId), true)
-      default:
-        return nil
-      }
+    let (bytes, response) = try await session.bytes(for: request)
+    guard let httpResponse = response as? HTTPURLResponse else {
+      throw APIError.invalidResponse
     }
+
+    // 401 retry
+    if httpResponse.statusCode == 401 {
+      try await authenticate()
+      return try await generateReading()
+    }
+
+    let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
+
+    if httpResponse.statusCode == 200 && contentType.contains("application/json") {
+      // JSON fast path: data exists on server
+      var collected = Data()
+      for try await byte in bytes {
+        collected.append(byte)
+      }
+
+      struct JSONResponse: Codable {
+        let entry: EntryResponse
+      }
+      let decoded = try JSONDecoder().decode(JSONResponse.self, from: collected)
+      return .immediate(.complete(decoded.entry, eventId: nil))
+    }
+
+    if httpResponse.statusCode == 202 {
+      // SSE stream: generation in progress
+      logStream("reading SSE stream opened (202)")
+      let stream = parseSSEBytes(bytes: bytes, label: "reading") {
+        eventType, data, eventId in
+        switch eventType {
+        case "start":
+          return (.start(eventId: eventId), false)
+        case "delta":
+          if let text = Self.extractStringValue(fromJSON: data, key: "text") {
+            return (.delta(text, eventId: eventId), false)
+          }
+          return nil
+        case "complete":
+          // The new server sends { entry: {...} } in the complete event
+          if let entryData = Self.extractNestedEntryData(fromJSON: data) {
+            if let entry = try? JSONDecoder().decode(
+              EntryResponse.self, from: entryData)
+            {
+              return (.complete(entry, eventId: eventId), true)
+            }
+          }
+          // Fallback: try parsing the whole data as an entry
+          if let payload = Self.extractJSONObjectData(fromJSON: data),
+            let entry = try? JSONDecoder().decode(
+              EntryResponse.self, from: payload)
+          {
+            return (.complete(entry, eventId: eventId), true)
+          }
+          return (.end(status: "completed", eventId: eventId), true)
+        case "end":
+          let status =
+            Self.extractStringValue(fromJSON: data, key: "status") ?? "completed"
+          return (.end(status: status, eventId: eventId), true)
+        case "heartbeat":
+          return (.heartbeat(eventId: eventId), false)
+        case "error":
+          let message =
+            Self.extractStringValue(fromJSON: data, key: "message")
+            ?? "Unknown stream error"
+          return (.error(message, eventId: eventId), true)
+        default:
+          return nil
+        }
+      }
+      return .stream(stream)
+    }
+
+    throw APIError.httpError(statusCode: httpResponse.statusCode)
   }
 
-  // MARK: - Generic SSE streaming
+  /// Request today's writing prompt. Returns immediately with cached data (200 JSON)
+  /// or streams generation events (202 SSE).
+  func generatePrompt() async throws -> GenerateResult<PromptStreamEvent> {
+    try await ensureAuthenticated()
 
-  /// Generic SSE stream method. Handles connection, 401 retry, reconnection with
-  /// cursor, and no-progress detection. The `parseFrame` closure maps raw SSE
-  /// event data into the caller's event type plus a `isTerminal` flag.
-  private func streamSSE<T: Sendable>(
-    path: String,
+    let url = URL(string: "\(baseURL)/api/prompts/generate/stream")!
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: [:] as [String: Any])
+    if let auth = authorizationHeader {
+      request.setValue(auth, forHTTPHeaderField: "Authorization")
+    }
+    request.timeoutInterval = 120
+
+    let (bytes, response) = try await session.bytes(for: request)
+    guard let httpResponse = response as? HTTPURLResponse else {
+      throw APIError.invalidResponse
+    }
+
+    // 401 retry
+    if httpResponse.statusCode == 401 {
+      try await authenticate()
+      return try await generatePrompt()
+    }
+
+    let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
+
+    if httpResponse.statusCode == 200 && contentType.contains("application/json") {
+      var collected = Data()
+      for try await byte in bytes {
+        collected.append(byte)
+      }
+
+      struct JSONResponse: Codable {
+        let entry: EntryResponse
+      }
+      let decoded = try JSONDecoder().decode(JSONResponse.self, from: collected)
+      let prompt = decoded.entry.writingPrompt ?? ""
+      return .immediate(.complete(prompt, eventId: nil))
+    }
+
+    if httpResponse.statusCode == 202 {
+      logStream("prompt SSE stream opened (202)")
+      let stream = parseSSEBytes(bytes: bytes, label: "prompt") {
+        eventType, data, eventId in
+        switch eventType {
+        case "start":
+          return (.start(eventId: eventId), false)
+        case "delta":
+          if let text = Self.extractStringValue(fromJSON: data, key: "text") {
+            return (.delta(text, eventId: eventId), false)
+          }
+          return nil
+        case "complete":
+          // The new server sends { entry: {...} } in the complete event
+          if let entryData = Self.extractNestedEntryData(fromJSON: data) {
+            if let entry = try? JSONDecoder().decode(
+              EntryResponse.self, from: entryData)
+            {
+              return (.complete(entry.writingPrompt ?? "", eventId: eventId), true)
+            }
+          }
+          // Fallback: try old format { prompt: "..." }
+          if let prompt = Self.extractStringValue(fromJSON: data, key: "prompt") {
+            return (.complete(prompt, eventId: eventId), true)
+          }
+          return (.end(status: "completed", eventId: eventId), true)
+        case "end":
+          let status =
+            Self.extractStringValue(fromJSON: data, key: "status") ?? "completed"
+          return (.end(status: status, eventId: eventId), true)
+        case "heartbeat":
+          return (.heartbeat(eventId: eventId), false)
+        case "error":
+          let message =
+            Self.extractStringValue(fromJSON: data, key: "message")
+            ?? "Unknown stream error"
+          return (.error(message, eventId: eventId), true)
+        default:
+          return nil
+        }
+      }
+      return .stream(stream)
+    }
+
+    throw APIError.httpError(statusCode: httpResponse.statusCode)
+  }
+
+  // MARK: - SSE Parser
+
+  /// Parse SSE frames from an already-open byte stream.
+  private func parseSSEBytes<T: Sendable>(
+    bytes: URLSession.AsyncBytes,
     label: String,
-    lastEventId: String?,
     parseFrame:
       @escaping @Sendable (
         _ eventType: String, _ data: String, _ eventId: String?
@@ -238,172 +320,72 @@ actor APIClient {
   ) -> AsyncThrowingStream<T, Error> {
     AsyncThrowingStream { continuation in
       let task = Task {
-        var retries = 0
-        var cursor = lastEventId
-        var noProgressReconnects = 0
+        var currentEvent = "message"
+        var currentId: String?
+        var dataLines: [String] = []
+        var reachedTerminal = false
 
-        self.logStream(
-          "\(label) connect requested lastEventId=\(lastEventId ?? "nil")")
-
-        while retries <= 3 {
-          do {
-            let requestStartCursor = cursor
-            let url = URL(string: "\(self.baseURL)\(path)")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            try await self.ensureAuthenticated()
-            if let auth = self.authorizationHeader {
-              request.setValue(auth, forHTTPHeaderField: "Authorization")
-            }
-            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            request.timeoutInterval = 300
-            if let cursor {
-              request.setValue(
-                cursor, forHTTPHeaderField: "Last-Event-ID")
-            }
-
-            self.logStream(
-              "\(label) opening SSE cursor=\(requestStartCursor ?? "nil") retry=\(retries)"
-            )
-
-            let (bytes, response) = try await self.session.bytes(for: request)
-
-            // Handle 401 by re-authenticating and retrying
-            if let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 401
-            {
-              self.logStream("\(label) SSE got 401, re-authenticating")
-              try await self.authenticate()
-              retries += 1
-              continue
-            }
-
-            try self.validateResponse(response)
-            if let httpResponse = response as? HTTPURLResponse {
-              self.logStream(
-                "\(label) SSE connected status=\(httpResponse.statusCode)")
-            } else {
-              self.logStream("\(label) SSE connected")
-            }
-
-            var currentEvent = "message"
-            var currentId: String?
-            var dataLines: [String] = []
-            var reachedTerminal = false
-            var receivedFrame = false
-
-            func emitFrame() {
-              let data = dataLines.joined(separator: "\n")
-              defer {
-                currentEvent = "message"
-                currentId = nil
-                dataLines.removeAll()
-              }
-              guard !data.isEmpty else { return }
-              receivedFrame = true
-              if let currentId {
-                cursor = currentId
-              }
-              self.logStream(
-                "\(label) event=\(currentEvent) id=\(currentId ?? "nil")")
-              if let (event, isTerminal) = parseFrame(
-                currentEvent, data, currentId)
-              {
-                continuation.yield(event)
-                if isTerminal { reachedTerminal = true }
-              }
-            }
-
-            for try await line in bytes.lines {
-              if line.isEmpty {
-                emitFrame()
-                if reachedTerminal {
-                  self.logStream(
-                    "\(label) stream finished terminal=true")
-                  continuation.finish()
-                  return
-                }
-                continue
-              }
-
-              // Flush previous frame when a new frame boundary is detected.
-              // URLSession.AsyncBytes.lines may drop empty lines between
-              // SSE frames, so we detect boundaries by seeing id:/event:
-              // while data is pending.
-              if (line.hasPrefix("id:") || line.hasPrefix("event:"))
-                && !dataLines.isEmpty
-              {
-                emitFrame()
-                if reachedTerminal {
-                  self.logStream(
-                    "\(label) stream finished terminal=true")
-                  continuation.finish()
-                  return
-                }
-              }
-
-              if line.hasPrefix("id:") {
-                currentId = String(line.dropFirst(3))
-                  .trimmingCharacters(in: .whitespaces)
-              } else if line.hasPrefix("event:") {
-                currentEvent = String(line.dropFirst(6))
-                  .trimmingCharacters(in: .whitespaces)
-              } else if line.hasPrefix("data:") {
-                dataLines.append(
-                  String(line.dropFirst(5))
-                    .trimmingCharacters(in: .whitespaces))
-              }
-            }
-
-            emitFrame()
-            if reachedTerminal {
-              self.logStream("\(label) stream finished terminal=true")
-              continuation.finish()
-              return
-            }
-
-            if !receivedFrame && requestStartCursor == cursor {
-              self.logStream(
-                "\(label) stream closed with no progress cursor=\(cursor ?? "nil")"
-              )
-              continuation.finish()
-              return
-            }
-
-            if requestStartCursor == cursor {
-              noProgressReconnects += 1
-              self.logStream(
-                "\(label) reconnect no progress count=\(noProgressReconnects)"
-              )
-            } else {
-              noProgressReconnects = 0
-            }
-            if noProgressReconnects >= 2 {
-              self.logStream(
-                "\(label) stream failing after no-progress reconnects")
-              continuation.finish(throwing: APIError.invalidResponse)
-              return
-            }
-
-            retries = 0
-            self.logStream(
-              "\(label) reconnecting nextCursor=\(cursor ?? "nil")")
-            try await Task.sleep(nanoseconds: 250_000_000)
-          } catch {
-            retries += 1
-            self.logStream(
-              "\(label) stream error retry=\(retries) error=\(error.localizedDescription)"
-            )
-            if retries > 3 {
-              continuation.finish(throwing: error)
-              return
-            }
-            try? await Task.sleep(
-              nanoseconds: UInt64(250_000_000 * retries))
+        func emitFrame() {
+          let data = dataLines.joined(separator: "\n")
+          defer {
+            currentEvent = "message"
+            currentId = nil
+            dataLines.removeAll()
+          }
+          guard !data.isEmpty else { return }
+          self.logStream("\(label) event=\(currentEvent) id=\(currentId ?? "nil")")
+          if let (event, isTerminal) = parseFrame(currentEvent, data, currentId) {
+            continuation.yield(event)
+            if isTerminal { reachedTerminal = true }
           }
         }
 
-        continuation.finish(throwing: APIError.invalidResponse)
+        do {
+          for try await line in bytes.lines {
+            if line.isEmpty {
+              emitFrame()
+              if reachedTerminal {
+                self.logStream("\(label) stream finished terminal=true")
+                continuation.finish()
+                return
+              }
+              continue
+            }
+
+            // Flush previous frame when a new frame boundary is detected.
+            if (line.hasPrefix("id:") || line.hasPrefix("event:"))
+              && !dataLines.isEmpty
+            {
+              emitFrame()
+              if reachedTerminal {
+                self.logStream("\(label) stream finished terminal=true")
+                continuation.finish()
+                return
+              }
+            }
+
+            if line.hasPrefix("id:") {
+              currentId = String(line.dropFirst(3))
+                .trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("event:") {
+              currentEvent = String(line.dropFirst(6))
+                .trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("data:") {
+              dataLines.append(
+                String(line.dropFirst(5))
+                  .trimmingCharacters(in: .whitespaces))
+            }
+            // Ignore comment lines (starting with ':')
+          }
+
+          emitFrame()
+          if reachedTerminal {
+            self.logStream("\(label) stream finished terminal=true")
+          }
+          continuation.finish()
+        } catch {
+          continuation.finish(throwing: error)
+        }
       }
       continuation.onTermination = { _ in task.cancel() }
     }
@@ -544,6 +526,16 @@ actor APIClient {
       return nil
     }
     return try? JSONSerialization.data(withJSONObject: obj)
+  }
+
+  /// Extract the nested "entry" object from a JSON string like { "entry": { ... } }
+  static func extractNestedEntryData(fromJSON json: String) -> Data? {
+    guard let obj = extractJSONObject(fromJSON: json),
+      let entryObj = obj["entry"] as? [String: Any]
+    else {
+      return nil
+    }
+    return try? JSONSerialization.data(withJSONObject: entryObj)
   }
 
   static func extractJSONObject(
