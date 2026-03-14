@@ -10,72 +10,123 @@ struct DoneView: View {
 
   @State private var showReadings = false
   @State private var showWritings = false
+  @State private var animateStats = false
 
   var body: some View {
     let entryArray = Array(entries)
     let streak = DayEngine.calculateStreak(entries: entryArray)
     let wordsRead = DayEngine.totalWordsRead(entries: entryArray)
-    let wordsWritten = DayEngine.totalWordsWritten(entries: entryArray)
+    let wordsWritten = DayEngine.totalWordsWritten(
+      entries: entryArray)
+    let isNewUser =
+      entryArray.filter {
+        $0.writingCompleted && !$0.isFreeWrite
+          && !$0.isBonusReading
+      }.isEmpty
 
-    VStack(spacing: 0) {
-      Spacer()
+    ScrollView {
+      VStack(spacing: 0) {
+        Spacer(minLength: Spacing.xxxl)
 
-      // Main message
-      Text("Day completed")
-        .font(Typography.serifLargeTitle)
-        .foregroundStyle(WQColor.primary)
-        .multilineTextAlignment(.center)
+        // Hero message
+        Text(isNewUser ? "Welcome" : "Day completed")
+          .font(Typography.serifLargeTitle)
+          .foregroundStyle(WQColor.primary)
+          .multilineTextAlignment(.center)
+          .padding(.bottom, Spacing.xxl)
 
-      Spacer()
+        // Stats row with animated counters
+        if !isNewUser {
+          HStack(spacing: Spacing.l) {
+            AnimatedStatColumn(
+              targetValue: streak,
+              label: "Streak",
+              symbolName: "flame",
+              animate: $animateStats
+            )
+            AnimatedStatColumn(
+              targetValue: wordsRead,
+              label: "Read",
+              symbolName: "book",
+              animate: $animateStats
+            )
+            AnimatedStatColumn(
+              targetValue: wordsWritten,
+              label: "Written",
+              symbolName: "pencil.line",
+              animate: $animateStats
+            )
+          }
+          .frame(maxWidth: .infinity)
+          .padding(.horizontal, Spacing.contentHorizontal)
+          .padding(.bottom, Spacing.l)
+        }
 
-      // Inline stats
-      HStack(spacing: Spacing.l) {
-        StatColumnView(value: "\(streak)", label: "Streak")
-        StatColumnView(value: "\(wordsRead)", label: "Read")
-        StatColumnView(value: "\(wordsWritten)", label: "Written")
-      }
-      .frame(maxWidth: .infinity)
-      .padding(.horizontal, Spacing.contentHorizontal)
+        // Activity chart
+        ActivityChartView(entries: entryArray, compact: true)
+          .padding(.horizontal, Spacing.contentHorizontal)
+          .padding(.bottom, Spacing.xl)
 
-      // Activity chart
-      ActivityChartView(entries: entryArray, compact: true)
+        // Empty state for new users
+        if isNewUser {
+          VStack(spacing: Spacing.s) {
+            Text("Complete your first reading and writing")
+            Text("to see your stats here.")
+          }
+          .font(Typography.sansCaption)
+          .foregroundStyle(WQColor.secondary)
+          .multilineTextAlignment(.center)
+          .padding(.bottom, Spacing.xl)
+        }
+
+        // Action buttons with SF Symbols
+        VStack(spacing: Spacing.m) {
+          Button(action: {
+            Haptics.light()
+            onBonusRead()
+          }) {
+            Label("Read something", systemImage: "book.pages")
+          }
+          .buttonStyle(WQOutlinedButtonStyle(isSecondary: true))
+
+          Button(action: {
+            Haptics.light()
+            onFreeWrite()
+          }) {
+            Label(
+              "Write something", systemImage: "pencil.line")
+          }
+          .buttonStyle(WQOutlinedButtonStyle(isSecondary: true))
+        }
         .padding(.horizontal, Spacing.contentHorizontal)
-        .padding(.vertical, Spacing.l)
+        .padding(.bottom, Spacing.l)
 
-      // Action buttons
-      VStack(spacing: Spacing.l) {
-        Button(action: onBonusRead) {
-          Text("Read something")
-        }
-        .buttonStyle(WQOutlinedButtonStyle(isSecondary: true))
+        // Subtle log links
+        HStack(spacing: Spacing.xl) {
+          Button {
+            showReadings = true
+          } label: {
+            Label("Readings", systemImage: "list.bullet")
+              .font(Typography.sansCaption)
+              .foregroundStyle(WQColor.secondary)
+          }
 
-        Button(action: onFreeWrite) {
-          Text("Write something")
+          Button {
+            showWritings = true
+          } label: {
+            Label("Writings", systemImage: "list.bullet")
+              .font(Typography.sansCaption)
+              .foregroundStyle(WQColor.secondary)
+          }
         }
-        .buttonStyle(WQOutlinedButtonStyle(isSecondary: true))
+        .padding(.bottom, Spacing.xxl)
       }
-      .padding(.horizontal, Spacing.contentHorizontal)
-
-      // Subtle log buttons
-      HStack(spacing: Spacing.xl) {
-        Button {
-          showReadings = true
-        } label: {
-          Text("Readings")
-            .font(Typography.sansCaption)
-            .foregroundStyle(WQColor.secondary)
-        }
-
-        Button {
-          showWritings = true
-        } label: {
-          Text("Writings")
-            .font(Typography.sansCaption)
-            .foregroundStyle(WQColor.secondary)
-        }
+    }
+    .onAppear {
+      // Delay stat animation to after the phase transition
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+        animateStats = true
       }
-      .padding(.top, Spacing.l)
-      .padding(.bottom, Spacing.xxl)
     }
     .sheet(isPresented: $showReadings) {
       NavigationStack {

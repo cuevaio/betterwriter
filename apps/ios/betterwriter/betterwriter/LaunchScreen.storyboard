@@ -4,6 +4,7 @@
     <dependencies>
         <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="23504"/>
         <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+        <capability name="System colors in branding assets" minToolsVersion="11.0"/>
         <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
     </dependencies>
     <scenes>
@@ -18,12 +19,12 @@
                             <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="betterwriter" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="G6u-v7-r6d">
                                 <rect key="frame" x="123" y="415" width="147" height="23"/>
                                 <fontDescription key="fontDescription" name="Georgia-Bold" family="Georgia" pointSize="15"/>
-                                <color key="textColor" white="0.0" alpha="0.6" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                <color key="textColor" systemColor="secondaryLabelColor"/>
                                 <nil key="highlightedColor"/>
                             </label>
                         </subviews>
                         <viewLayoutGuide key="safeArea" id="Bcu-3y-fUS"/>
-                        <color key="backgroundColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                        <color key="backgroundColor" systemColor="systemBackgroundColor"/>
                         <constraints>
                             <constraint firstItem="G6u-v7-r6d" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="T1E-GK-DNn"/>
                             <constraint firstItem="G6u-v7-r6d" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="mH4-FR-RIv"/>

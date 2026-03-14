@@ -11,9 +11,9 @@ struct FreeWriteView: View {
 
   @State private var text = ""
   @FocusState private var isFocused: Bool
-  /// Direct reference to the free-write entry (separate from the main day entry).
+  /// Direct reference to the free-write entry.
   @State private var managedEntry: DayEntry?
-  /// Cached word count to avoid re-splitting text on every access.
+  /// Cached word count.
   @State private var wordCount: Int = 0
   /// Debounce task for auto-saving drafts.
   @State private var draftSaveTask: Task<Void, Never>?
@@ -39,11 +39,11 @@ struct FreeWriteView: View {
 
           TextEditor(text: $text)
             .font(Typography.serifBody)
-            .lineSpacing(6)
+            .lineSpacing(Typography.editorLineSpacing)
             .foregroundStyle(WQColor.primary)
             .scrollContentBackground(.hidden)
             .focused($isFocused)
-            .frame(minHeight: 300)
+            .frame(minHeight: Spacing.textEditorMinHeight)
             .accessibilityLabel("Free writing area")
             .accessibilityHint("Write whatever you want")
         }
@@ -60,17 +60,21 @@ struct FreeWriteView: View {
         Button(action: completeWriting) {
           Text("DONE")
         }
-        .buttonStyle(WQOutlinedButtonStyle())
-        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .buttonStyle(WQOutlinedButtonStyle(isFilled: true))
+        .disabled(
+          text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty)
       }
       .padding(.horizontal, Spacing.contentHorizontal)
       .padding(.bottom, Spacing.l)
-      .background(.ultraThinMaterial)
+      .background(
+        WQColor.background.opacity(0.9)
+          .background(.ultraThinMaterial)
+      )
     }
     .task {
       resolveEntryAndRestoreDraft()
-      // Delay focus slightly to avoid interfering with the phase transition animation
-      try? await Task.sleep(nanoseconds: 600_000_000)
+      try? await Task.sleep(nanoseconds: Spacing.focusDelayNs)
       isFocused = true
     }
     .onChange(of: text) { _, newValue in
@@ -88,19 +92,16 @@ struct FreeWriteView: View {
 
   // MARK: - Persistence
 
-  /// Find an existing in-progress free-write entry or create a new one at a
-  /// synthetic dayIndex (200_000+). This never touches the main day entry.
-  /// The next available free-write index is computed locally from existing entries.
   private func resolveEntryAndRestoreDraft() {
-    // Already resolved (e.g. SwiftUI re-ran .task)
     if managedEntry != nil {
-      if let existingText = managedEntry?.writingText, !existingText.isEmpty {
+      if let existingText = managedEntry?.writingText,
+        !existingText.isEmpty
+      {
         text = existingText
       }
       return
     }
 
-    // Look for any in-progress free write
     let descriptor = FetchDescriptor<DayEntry>(
       predicate: #Predicate<DayEntry> {
         $0.isFreeWrite == true && $0.writingCompleted == false
@@ -108,52 +109,58 @@ struct FreeWriteView: View {
     )
     if let inProgress = try? modelContext.fetch(descriptor).first {
       managedEntry = inProgress
-      if let existingText = inProgress.writingText, !existingText.isEmpty {
+      if let existingText = inProgress.writingText,
+        !existingText.isEmpty
+      {
         text = existingText
       }
       return
     }
 
-    // No in-progress free write — create a new one.
-    // Compute the next available free-write index from existing entries.
     let allDescriptor = FetchDescriptor<DayEntry>(
       predicate: #Predicate<DayEntry> {
         $0.isFreeWrite == true
       }
     )
-    let existingFreeWrites = (try? modelContext.fetch(allDescriptor)) ?? []
-    let maxIndex = existingFreeWrites.map { $0.dayIndex }.max() ?? (DayEntry.freeWriteIndexBase - 1)
+    let existingFreeWrites =
+      (try? modelContext.fetch(allDescriptor)) ?? []
+    let maxIndex =
+      existingFreeWrites.map { $0.dayIndex }.max()
+      ?? (DayEntry.freeWriteIndexBase - 1)
     let freeWriteIndex = maxIndex + 1
 
     let entry = DayEntry(dayIndex: freeWriteIndex)
     entry.isFreeWrite = true
     modelContext.insert(entry)
-    do { try modelContext.save() } catch { print("FreeWriteView: save new entry failed: \(error)") }
+    do { try modelContext.save() } catch {
+      print("FreeWriteView: save new entry failed: \(error)")
+    }
     managedEntry = entry
   }
 
-  /// Auto-save draft on every keystroke.
   private func saveDraft() {
     guard let entry = managedEntry else { return }
     entry.writingText = text
     entry.writingWordCount = wordCount
-    do { try modelContext.save() } catch { print("FreeWriteView: saveDraft failed: \(error)") }
+    do { try modelContext.save() } catch {
+      print("FreeWriteView: saveDraft failed: \(error)")
+    }
   }
 
-  /// Save as completed, sync to server, and return to DoneView.
   private func completeWriting() {
     guard let entry = managedEntry else { return }
 
     entry.writingText = text
     entry.writingWordCount = wordCount
     entry.writingCompleted = true
-    entry.readingCompleted = true  // Mark as complete cycle
+    entry.readingCompleted = true
     entry.needsSync = true
     do { try modelContext.save() } catch {
       print("FreeWriteView: completeWriting save failed: \(error)")
     }
 
-    // Sync to server — server resolves entry from isFreeWrite context
+    Haptics.medium()
+
     Task {
       do {
         _ = try await APIClient.shared.updateEntry(

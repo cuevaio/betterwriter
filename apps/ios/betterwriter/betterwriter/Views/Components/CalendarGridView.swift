@@ -5,8 +5,8 @@ import SwiftUI
 /// from the container width so the chart never overflows or scrolls.
 ///
 /// - Parameters:
-///   - compact: When `true`, hides all labels and the legend, uses gray colors,
-///     and fixes cells to `compactCellSize` so the chart stays small. Used in DoneView.
+///   - compact: When `true`, hides all labels and the legend, and fixes cells
+///     to `compactCellSize` so the chart stays small. Used in DoneView.
 ///   - compactCellSize: Cell size (pt) when `compact` is true. Default 7.
 struct ActivityChartView: View {
   let entries: [DayEntry]
@@ -19,13 +19,14 @@ struct ActivityChartView: View {
 
   // MARK: - Data helpers
 
-  /// Sum reading + writing words for all non-skipped entries per calendar day,
-  /// including bonus readings and free writes.
+  /// Sum reading + writing words for all non-skipped entries per calendar day.
   private var wordsByDate: [DateComponents: Int] {
     var map: [DateComponents: Int] = [:]
     for entry in entries where !entry.skipped {
-      let comps = calendar.dateComponents([.year, .month, .day], from: entry.calendarDate)
-      map[comps, default: 0] += entry.readingWordCount + entry.writingWordCount
+      let comps = calendar.dateComponents(
+        [.year, .month, .day], from: entry.calendarDate)
+      map[comps, default: 0] +=
+        entry.readingWordCount + entry.writingWordCount
     }
     return map
   }
@@ -34,8 +35,10 @@ struct ActivityChartView: View {
     let today = calendar.startOfDay(for: Date())
     let todayWeekday = calendar.component(.weekday, from: today)
     let daysUntilSat = (7 - todayWeekday) % 7
-    let endDate = calendar.date(byAdding: .day, value: daysUntilSat, to: today)!
-    let startDate = calendar.date(byAdding: .day, value: -(weeksToShow * 7 - 1), to: endDate)!
+    let endDate = calendar.date(
+      byAdding: .day, value: daysUntilSat, to: today)!
+    let startDate = calendar.date(
+      byAdding: .day, value: -(weeksToShow * 7 - 1), to: endDate)!
 
     var grid: [[Date?]] = []
     var currentDate = startDate
@@ -47,7 +50,8 @@ struct ActivityChartView: View {
       let col = grid.count - 1
       let row = weekday - 1
       grid[col][row] = currentDate > today ? nil : currentDate
-      currentDate = calendar.date(byAdding: .day, value: 1, to: currentDate)!
+      currentDate = calendar.date(
+        byAdding: .day, value: 1, to: currentDate)!
     }
     return grid
   }
@@ -58,7 +62,8 @@ struct ActivityChartView: View {
     formatter.dateFormat = "MMM"
     var lastMonth = -1
     for (colIndex, week) in grid.enumerated() {
-      guard let firstDate = week.compactMap({ $0 }).first else { continue }
+      guard let firstDate = week.compactMap({ $0 }).first
+      else { continue }
       let month = calendar.component(.month, from: firstDate)
       if month != lastMonth {
         labels.append((formatter.string(from: firstDate), colIndex))
@@ -70,7 +75,6 @@ struct ActivityChartView: View {
 
   // MARK: - Body
 
-  /// Summary for VoiceOver describing chart activity.
   private var accessibilitySummary: String {
     let totalDays = entries.filter {
       $0.readingCompleted || $0.writingCompleted
@@ -78,16 +82,19 @@ struct ActivityChartView: View {
     let totalWords = entries.reduce(0) {
       $0 + $1.readingWordCount + $1.writingWordCount
     }
-    return "Activity chart. \(totalDays) active days, \(totalWords) total words."
+    return
+      "Activity chart. \(totalDays) active days, \(totalWords) total words."
   }
 
   var body: some View {
     if compact {
-      // Compact mode: fixed small cell size, fill width with as many weeks as fit.
       GeometryReader { geo in
         let availableWidth = geo.size.width
         let weeksToShow = max(
-          1, Int((availableWidth + cellSpacing) / (compactCellSize + cellSpacing)))
+          1,
+          Int(
+            (availableWidth + cellSpacing)
+              / (compactCellSize + cellSpacing)))
         let grid = buildGrid(weeksToShow: weeksToShow)
         let lookup = wordsByDate
 
@@ -99,8 +106,7 @@ struct ActivityChartView: View {
           cellSpacing: cellSpacing,
           dayLabelWidth: 0,
           gridWidth: availableWidth,
-          showLabels: false,
-          useGray: true
+          showLabels: false
         )
       }
       .frame(height: compactChartHeight)
@@ -111,8 +117,11 @@ struct ActivityChartView: View {
         let availableWidth = geo.size.width
         let gridWidth = availableWidth - dayLabelWidth - cellSpacing
         let minCellSize: CGFloat = 10
-        let weeksToShow = max(1, Int(gridWidth / (minCellSize + cellSpacing)))
-        let cellSize = (gridWidth - CGFloat(weeksToShow - 1) * cellSpacing) / CGFloat(weeksToShow)
+        let weeksToShow = max(
+          1, Int(gridWidth / (minCellSize + cellSpacing)))
+        let cellSize =
+          (gridWidth - CGFloat(weeksToShow - 1) * cellSpacing)
+          / CGFloat(weeksToShow)
         let grid = buildGrid(weeksToShow: weeksToShow)
         let lookup = wordsByDate
         let labels = monthLabels(for: grid)
@@ -125,8 +134,7 @@ struct ActivityChartView: View {
           cellSpacing: cellSpacing,
           dayLabelWidth: dayLabelWidth,
           gridWidth: gridWidth,
-          showLabels: true,
-          useGray: false
+          showLabels: true
         )
       }
       .frame(height: fullChartHeight)
@@ -144,11 +152,13 @@ struct ActivityChartView: View {
     let monthRowHeight: CGFloat = 14
     let gridHeight = 7 * minCellSize + 6 * cellSpacing
     let legendHeight: CGFloat = 14
-    return monthRowHeight + Spacing.s + gridHeight + Spacing.s + legendHeight
+    return
+      monthRowHeight + Spacing.s + gridHeight + Spacing.s
+      + legendHeight
   }
 }
 
-// MARK: - Inner grid view (extracted to help the type checker)
+// MARK: - Inner grid view
 
 private struct ActivityChartGrid: View {
   let grid: [[Date?]]
@@ -159,7 +169,6 @@ private struct ActivityChartGrid: View {
   let dayLabelWidth: CGFloat
   let gridWidth: CGFloat
   var showLabels: Bool = true
-  var useGray: Bool = false
 
   private let calendar = Calendar.current
 
@@ -177,14 +186,16 @@ private struct ActivityChartGrid: View {
 
   private var monthLabelsRow: some View {
     HStack(spacing: 0) {
-      Color.clear.frame(width: dayLabelWidth + cellSpacing, height: 14)
+      Color.clear.frame(
+        width: dayLabelWidth + cellSpacing, height: 14)
       ZStack(alignment: .leading) {
         Color.clear.frame(width: gridWidth, height: 14)
         ForEach(labels, id: \.1) { item in
           Text(item.0)
             .font(Typography.chartLabel)
             .foregroundStyle(WQColor.secondary)
-            .offset(x: CGFloat(item.1) * (cellSize + cellSpacing))
+            .offset(
+              x: CGFloat(item.1) * (cellSize + cellSpacing))
         }
       }
     }
@@ -203,7 +214,9 @@ private struct ActivityChartGrid: View {
         dayLabel(for: row)
           .font(Typography.chartDayLabel)
           .foregroundStyle(WQColor.secondary)
-          .frame(width: dayLabelWidth, height: cellSize, alignment: .trailing)
+          .frame(
+            width: dayLabelWidth, height: cellSize,
+            alignment: .trailing)
       }
     }
   }
@@ -244,7 +257,8 @@ private struct ActivityChartGrid: View {
 
   private func cellColor(for date: Date?) -> Color {
     guard let date = date else { return Color.clear }
-    let comps = calendar.dateComponents([.year, .month, .day], from: date)
+    let comps = calendar.dateComponents(
+      [.year, .month, .day], from: date)
     let level = activityLevel(for: lookup[comps])
     return colorForLevel(level)
   }
@@ -275,16 +289,8 @@ private struct ActivityChartGrid: View {
     return 4
   }
 
+  /// Unified monochrome color levels for both compact and full modes.
   private func colorForLevel(_ level: Int) -> Color {
-    if useGray {
-      switch level {
-      case 1: return Color.primary.opacity(0.2)
-      case 2: return Color.primary.opacity(0.4)
-      case 3: return Color.primary.opacity(0.65)
-      case 4: return Color.primary.opacity(0.9)
-      default: return Color.primary.opacity(0.06)
-      }
-    }
     switch level {
     case 1: return WQColor.activityLevel1
     case 2: return WQColor.activityLevel2

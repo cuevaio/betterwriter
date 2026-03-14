@@ -1,18 +1,22 @@
 import SwiftUI
 
-/// Inline "Back" button used for state-machine navigation (e.g. returning to DoneView).
+/// Inline back button used for state-machine navigation (e.g. returning to DoneView).
 ///
-/// Renders a left-aligned text button below the global brand bar with consistent
-/// styling from the design system (Typography, WQColor, Spacing).
+/// Renders a left-aligned chevron + text button below the global brand bar with consistent
+/// styling from the design system.
 struct WQBackButton: View {
   let action: () -> Void
 
   var body: some View {
     HStack {
       Button(action: action) {
-        Text("Back")
-          .font(Typography.sansBody)
-          .foregroundStyle(WQColor.primary)
+        HStack(spacing: Spacing.xs) {
+          Image(systemName: "chevron.left")
+            .font(.system(size: 15, weight: .medium))
+          Text("Back")
+            .font(Typography.sansBody)
+        }
+        .foregroundStyle(WQColor.primary)
       }
       Spacer()
     }

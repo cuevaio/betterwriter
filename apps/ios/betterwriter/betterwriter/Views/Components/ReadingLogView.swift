@@ -49,10 +49,7 @@ struct ReadingLogView: View {
         ScrollView {
           VStack(alignment: .leading, spacing: Spacing.l) {
             if let body = entry.readingBody {
-              Text(MarkdownHelper.attributedString(body))
-                .font(Typography.serifBody)
-                .lineSpacing(6)
-                .textSelection(.enabled)
+              WQMarkdownContent(text: body)
             }
           }
           .padding(.horizontal, Spacing.readingHorizontal)

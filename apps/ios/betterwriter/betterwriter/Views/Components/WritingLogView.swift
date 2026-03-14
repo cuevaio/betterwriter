@@ -59,7 +59,7 @@ struct WritingLogView: View {
             if let text = entry.writingText {
               Text(text)
                 .font(Typography.serifBody)
-                .lineSpacing(6)
+                .lineSpacing(Typography.readingLineSpacing)
             }
           }
           .padding(.horizontal, Spacing.contentHorizontal)
