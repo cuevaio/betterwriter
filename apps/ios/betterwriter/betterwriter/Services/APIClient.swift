@@ -8,7 +8,7 @@ actor APIClient {
   #if DEBUG
     private let baseURL = "http://localhost:3000"
   #else
-    private let baseURL = "https://betterwriter.app"
+    private let baseURL = "https://betterwriter.vercel.app"
   #endif
 
   private let deviceId: UUID
