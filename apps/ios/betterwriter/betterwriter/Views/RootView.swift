@@ -9,6 +9,7 @@ struct RootView: View {
   @Query(sort: \DayEntry.dayIndex) private var entries: [DayEntry]
 
   @State private var currentPhase: AppPhase = .loading
+  @State private var resolvedProfile: UserProfile?
 
   private var profile: UserProfile? { profiles.first }
 
@@ -76,6 +77,7 @@ struct RootView: View {
     .animation(.easeInOut(duration: 0.5), value: currentPhase)
     .task {
       let profile = await ensureProfile()
+      resolvedProfile = profile
       advanceState(profileOverride: profile)
     }
     // Re-evaluate whenever SwiftData queries update (profiles loads asynchronously)
@@ -143,7 +145,7 @@ struct RootView: View {
     if case .freeWrite = currentPhase { return }
     if case .bonusRead = currentPhase { return }
 
-    let effectiveProfile = profileOverride ?? profile
+    let effectiveProfile = profileOverride ?? resolvedProfile ?? profile
 
     let resolved = DayEngine.resolveCurrentPhase(
       profile: effectiveProfile,
