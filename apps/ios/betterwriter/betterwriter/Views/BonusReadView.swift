@@ -18,6 +18,7 @@ struct BonusReadView: View {
   @State private var revealTask: Task<Void, Never>?
   /// Direct reference to the bonus reading entry.
   @State private var managedEntry: DayEntry?
+  @State private var isCompleting = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -136,9 +137,15 @@ struct BonusReadView: View {
 
   private var doneButton: some View {
     Button(action: completeReading) {
-      Text("DONE READING")
+      if isCompleting {
+        ProgressView()
+          .tint(WQColor.primary)
+      } else {
+        Text("DONE READING")
+      }
     }
     .buttonStyle(WQOutlinedButtonStyle())
+    .disabled(isCompleting)
     .padding(.horizontal, Spacing.contentHorizontal)
     .padding(.bottom, Spacing.l)
     .background(.ultraThinMaterial)
@@ -286,14 +293,17 @@ struct BonusReadView: View {
 
   @MainActor
   private func completeReading() {
-    guard let entry = managedEntry else { return }
+    guard let entry = managedEntry, !isCompleting else { return }
+    isCompleting = true
+
     entry.readingCompleted = true
     entry.needsSync = true
     do { try modelContext.save() } catch {
       print("BonusReadView: save completion failed: \(error)")
     }
 
-    // Sync to server — server resolves entry from isBonusReading context
+    // Await server sync so the entity lock is released before the user
+    // can request a new reading (prevents showing the old reading).
     Task {
       do {
         _ = try await APIClient.shared.updateEntry(
@@ -303,10 +313,10 @@ struct BonusReadView: View {
           ]
         )
       } catch {
+        // Local state is correct; SyncService will retry later.
         print("BonusReadView: Failed to sync reading completion: \(error)")
       }
+      onComplete()
     }
-
-    onComplete()
   }
 }

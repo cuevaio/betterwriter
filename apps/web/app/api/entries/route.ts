@@ -1,16 +1,17 @@
+import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { entries } from "@/lib/db/schema";
-import { eq, and, gte, lt, desc } from "drizzle-orm";
-import { requireUserId } from "@/lib/auth";
+import { getActiveStreamId, releaseEntityLock } from "@/lib/ai/durable-stream";
 import { errorResponse } from "@/lib/api/error-response";
 import { pickDefined } from "@/lib/api/pick-fields";
-import { entryUpdateSchema, type EntryUpdate } from "@/lib/api/schemas";
+import { type EntryUpdate, entryUpdateSchema } from "@/lib/api/schemas";
+import { requireUserId } from "@/lib/auth";
 import {
   getCurrentDayIndex,
   getNextBonusDayIndex,
   getNextFreeWriteDayIndex,
 } from "@/lib/day-index";
+import { db } from "@/lib/db";
+import { entries } from "@/lib/db/schema";
 
 const UPDATABLE_ENTRY_FIELDS = [
   "readingCompleted",
@@ -31,7 +32,7 @@ const UPDATABLE_ENTRY_FIELDS = [
  */
 async function resolveTargetDayIndex(
   userId: string,
-  updates: EntryUpdate,
+  updates: EntryUpdate
 ): Promise<number> {
   if (updates.isBonusReading) {
     // Find in-progress bonus reading (isBonusReading && !readingCompleted)
@@ -44,8 +45,8 @@ async function resolveTargetDayIndex(
           eq(entries.isBonusReading, true),
           eq(entries.readingCompleted, false),
           gte(entries.dayIndex, 100_000),
-          lt(entries.dayIndex, 200_000),
-        ),
+          lt(entries.dayIndex, 200_000)
+        )
       )
       .orderBy(desc(entries.dayIndex))
       .limit(1);
@@ -64,8 +65,8 @@ async function resolveTargetDayIndex(
           eq(entries.userId, userId),
           eq(entries.isFreeWrite, true),
           eq(entries.writingCompleted, false),
-          gte(entries.dayIndex, 200_000),
-        ),
+          gte(entries.dayIndex, 200_000)
+        )
       )
       .orderBy(desc(entries.dayIndex))
       .limit(1);
@@ -101,7 +102,10 @@ export async function GET(request: Request) {
     } else {
       dayIndex = parseInt(dayIndexStr, 10);
       if (!Number.isFinite(dayIndex) || dayIndex < 0) {
-        return NextResponse.json({ error: "Invalid dayIndex" }, { status: 400 });
+        return NextResponse.json(
+          { error: "Invalid dayIndex" },
+          { status: 400 }
+        );
       }
     }
 
@@ -131,7 +135,7 @@ export async function PUT(request: Request) {
     if (!parsed.success) {
       return NextResponse.json(
         { error: "Invalid request", details: parsed.error.flatten() },
-        { status: 400 },
+        { status: 400 }
       );
     }
     const updates = parsed.data;
@@ -164,6 +168,15 @@ export async function PUT(request: Request) {
         set: allowedFields,
       })
       .returning();
+
+    // If this update marks a reading as completed, release the entity lock
+    // so the next POST /api/readings/generate/stream can start fresh.
+    if (allowedFields.readingCompleted === true) {
+      const activeStreamId = await getActiveStreamId(userId, "reading");
+      if (activeStreamId) {
+        await releaseEntityLock(userId, "reading", activeStreamId);
+      }
+    }
 
     return NextResponse.json(row, { status: isNew ? 201 : 200 });
   } catch (error) {

@@ -44,7 +44,10 @@ struct DoneView: View {
       .frame(maxWidth: .infinity)
       .padding(.horizontal, Spacing.contentHorizontal)
 
-      Spacer()
+      // Activity chart
+      ActivityChartView(entries: Array(entries), compact: true)
+        .padding(.horizontal, Spacing.contentHorizontal)
+        .padding(.vertical, Spacing.l)
 
       // Action buttons
       VStack(spacing: Spacing.l) {

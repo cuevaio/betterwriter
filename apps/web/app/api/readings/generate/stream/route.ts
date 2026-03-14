@@ -206,35 +206,46 @@ export async function POST(request: Request) {
       );
     }
     if (active.meta.status === "completed") {
-      // Stream completed — fetch the entry from DB and return it directly.
-      const dayIndex = active.meta.params.dayIndex as number;
+      // Stream completed — check whether the user has already finished
+      // reading this entry. If so, the lock is stale and we release it
+      // so a new reading (bonus or next day) can be generated.
+      const lockedDayIndex = active.meta.params.dayIndex as number;
       const rows = await db
         .select()
         .from(entries)
-        .where(and(eq(entries.userId, userId), eq(entries.dayIndex, dayIndex)))
+        .where(
+          and(eq(entries.userId, userId), eq(entries.dayIndex, lockedDayIndex))
+        )
         .limit(1);
       if (rows.length > 0 && rows[0].readingBody !== null) {
-        return Response.json(
-          {
-            ok: true,
-            mode: "completed",
-            entry: {
-              id: rows[0].id,
-              userId: rows[0].userId,
-              dayIndex: rows[0].dayIndex,
-              calendarDate: rows[0].calendarDate,
-              readingBody: rows[0].readingBody,
-              isBonusReading: rows[0].isBonusReading ?? false,
-              writingPrompt: rows[0].writingPrompt ?? null,
-              writingText: rows[0].writingText ?? null,
-              writingWordCount: rows[0].writingWordCount ?? null,
+        if (rows[0].readingCompleted) {
+          // User finished this reading — release so next generation can start.
+          await releaseEntityLock(userId, "reading", active.streamId);
+        } else {
+          // User hasn't finished reading — return the entry (reconnection).
+          return Response.json(
+            {
+              ok: true,
+              mode: "completed",
+              entry: {
+                id: rows[0].id,
+                userId: rows[0].userId,
+                dayIndex: rows[0].dayIndex,
+                calendarDate: rows[0].calendarDate,
+                readingBody: rows[0].readingBody,
+                isBonusReading: rows[0].isBonusReading ?? false,
+                writingPrompt: rows[0].writingPrompt ?? null,
+                writingText: rows[0].writingText ?? null,
+                writingWordCount: rows[0].writingWordCount ?? null,
+              },
             },
-          },
-          { status: 200 }
-        );
+            { status: 200 }
+          );
+        }
+      } else {
+        // Stream completed but DB has no data — clear stale lock.
+        await releaseEntityLock(userId, "reading", active.streamId);
       }
-      // Weird state: stream completed but DB has no data. Clear lock and proceed.
-      await releaseEntityLock(userId, "reading", active.streamId);
     }
   }
 
