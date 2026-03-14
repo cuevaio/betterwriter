@@ -19,7 +19,7 @@
     "@upstash/workflow": "^0.2.20",
     "ai": "^6",
     "drizzle-orm": "^0.44",
-    "next": "^15",
+    "next": "^16.1.6",
     "react": "^19",
     "react-dom": "^19",
     "react-markdown": "^10.1.0",
