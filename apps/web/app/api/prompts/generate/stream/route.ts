@@ -14,7 +14,8 @@ import { createInlineSSEResponse, serializeEntry } from "@/lib/api/durable-sse";
 import { requireUserId } from "@/lib/auth";
 import { getCurrentDayIndex } from "@/lib/day-index";
 import { db } from "@/lib/db";
-import { entries, users } from "@/lib/db/schema";
+import { ensureUser } from "@/lib/db/ensure-user";
+import { entries } from "@/lib/db/schema";
 
 const qstash = new Client({
   token: process.env.QSTASH_TOKEN as string,
@@ -56,8 +57,8 @@ async function runPromptGeneration(payload: PromptGenerationPayload) {
     });
     heartbeat.start();
 
-    const [userRows, aboutEntryRows, todayEntryRows] = await Promise.all([
-      db.select().from(users).where(eq(users.id, userId)).limit(1),
+    const [, aboutEntryRows, todayEntryRows] = await Promise.all([
+      ensureUser(userId),
       db
         .select()
         .from(entries)
@@ -74,16 +75,6 @@ async function runPromptGeneration(payload: PromptGenerationPayload) {
         .where(and(eq(entries.userId, userId), eq(entries.dayIndex, dayIndex)))
         .limit(1),
     ]);
-
-    if (userRows.length === 0) {
-      await heartbeat.stop();
-      await emitDurableEvent(streamId, "error", {
-        message: "User not found",
-        streamId,
-      });
-      await releaseEntityLock(userId, "prompt", streamId);
-      return;
-    }
 
     const readingBody =
       aboutEntryRows.length > 0 ? aboutEntryRows[0].readingBody : null;

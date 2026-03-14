@@ -13,6 +13,7 @@ struct RootView: View {
   @State private var syncTask: Task<Void, Never>?
   @State private var loadingPulse = false
   @State private var lastPrefetchedDayIndex: Int?
+  @State private var animateDoneStats = false
 
   private var profile: UserProfile? { profiles.first }
 
@@ -38,7 +39,10 @@ struct RootView: View {
         WriteView(
           dayIndex: dayIndex,
           aboutDayIndex: aboutDayIndex,
-          onComplete: { advanceState() }
+          onComplete: {
+            animateDoneStats = true
+            advanceState()
+          }
         )
         .transition(
           .asymmetric(
@@ -51,10 +55,13 @@ struct RootView: View {
       case .done(let dayIndex):
         DoneView(
           dayIndex: dayIndex,
+          shouldAnimateStats: animateDoneStats,
           onBonusRead: {
+            animateDoneStats = false
             currentPhase = .bonusRead(dayIndex: dayIndex)
           },
           onFreeWrite: {
+            animateDoneStats = false
             currentPhase = .freeWrite(dayIndex: dayIndex)
           }
         )
@@ -129,6 +136,10 @@ struct RootView: View {
           PrefetchStore.shared.reset()
           PrefetchStore.shared.prefetch()
           lastPrefetchedDayIndex = currentDay
+        } else if case .failed = PrefetchStore.shared.reading {
+          // Previous prefetch failed (e.g. "User not found") — retry
+          PrefetchStore.shared.reset()
+          PrefetchStore.shared.prefetch()
         }
 
         advanceState()

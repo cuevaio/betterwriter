@@ -14,7 +14,8 @@ import { createInlineSSEResponse, serializeEntry } from "@/lib/api/durable-sse";
 import { requireUserId } from "@/lib/auth";
 import { getCurrentDayIndex, getNextBonusDayIndex } from "@/lib/day-index";
 import { db } from "@/lib/db";
-import { entries, users } from "@/lib/db/schema";
+import { ensureUser } from "@/lib/db/ensure-user";
+import { entries } from "@/lib/db/schema";
 
 const qstash = new Client({
   token: process.env.QSTASH_TOKEN as string,
@@ -85,24 +86,14 @@ async function runReadingGeneration(payload: ReadingGenerationPayload) {
     });
     heartbeat.start();
 
-    const [existingRows, userRows] = await Promise.all([
+    const [existingRows] = await Promise.all([
       db
         .select()
         .from(entries)
         .where(and(eq(entries.userId, userId), eq(entries.dayIndex, dayIndex)))
         .limit(1),
-      db.select().from(users).where(eq(users.id, userId)).limit(1),
+      ensureUser(userId),
     ]);
-
-    if (userRows.length === 0) {
-      await heartbeat.stop();
-      await emitDurableEvent(streamId, "error", {
-        message: "User not found",
-        streamId,
-      });
-      await releaseEntityLock(userId, "reading", streamId);
-      return;
-    }
 
     const reading = await generateReadingStream(
       userId,

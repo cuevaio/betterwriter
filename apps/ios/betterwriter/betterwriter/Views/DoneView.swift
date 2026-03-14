@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DoneView: View {
   let dayIndex: Int
+  let shouldAnimateStats: Bool
   let onBonusRead: () -> Void
   let onFreeWrite: () -> Void
 
@@ -42,19 +43,22 @@ struct DoneView: View {
               targetValue: streak,
               label: "Streak",
               symbolName: "flame",
-              animate: $animateStats
+              animate: $animateStats,
+              skipAnimation: !shouldAnimateStats
             )
             AnimatedStatColumn(
               targetValue: wordsRead,
               label: "Read",
               symbolName: "book",
-              animate: $animateStats
+              animate: $animateStats,
+              skipAnimation: !shouldAnimateStats
             )
             AnimatedStatColumn(
               targetValue: wordsWritten,
               label: "Written",
               symbolName: "pencil.line",
-              animate: $animateStats
+              animate: $animateStats,
+              skipAnimation: !shouldAnimateStats
             )
           }
           .frame(maxWidth: .infinity)
@@ -123,8 +127,13 @@ struct DoneView: View {
       }
     }
     .onAppear {
-      // Delay stat animation to after the phase transition
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+      if shouldAnimateStats {
+        // Delay stat animation to after the phase transition
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+          animateStats = true
+        }
+      } else {
+        // Show stats at their actual values immediately
         animateStats = true
       }
     }

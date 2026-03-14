@@ -47,6 +47,15 @@ struct ReadView: View {
     .task {
       await loadReading()
     }
+    .onReceive(
+      NotificationCenter.default.publisher(
+        for: UIApplication.didBecomeActiveNotification)
+    ) { _ in
+      // If we're showing an error, retry when app comes to foreground
+      if errorMessage != nil {
+        Task { await loadReading() }
+      }
+    }
   }
 
   // MARK: - Subviews
