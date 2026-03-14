@@ -13,6 +13,9 @@ final class DayEntry: Identifiable {
   // Reading
   var readingBody: String?
   var readingCompleted: Bool
+  /// Partial text accumulated during an active SSE stream.
+  /// Cleared when readingBody is set (stream completed).
+  var readingBodyDraft: String?
 
   // Writing
   var writingPrompt: String?
@@ -34,6 +37,7 @@ final class DayEntry: Identifiable {
     calendarDate: Date = Date(),
     readingBody: String? = nil,
     readingCompleted: Bool = false,
+    readingBodyDraft: String? = nil,
     writingPrompt: String? = nil,
     writingText: String? = nil,
     writingWordCount: Int = 0,
@@ -48,6 +52,7 @@ final class DayEntry: Identifiable {
     self.calendarDate = calendarDate
     self.readingBody = readingBody
     self.readingCompleted = readingCompleted
+    self.readingBodyDraft = readingBodyDraft
     self.writingPrompt = writingPrompt
     self.writingText = writingText
     self.writingWordCount = writingWordCount
