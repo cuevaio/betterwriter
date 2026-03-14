@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getActiveStreamId, releaseEntityLock } from "@/lib/ai/durable-stream";
+import { addUserInputMemory } from "@/lib/ai/mem0";
 import { errorResponse } from "@/lib/api/error-response";
 import { pickDefined } from "@/lib/api/pick-fields";
 import { type EntryUpdate, entryUpdateSchema } from "@/lib/api/schemas";
@@ -191,6 +192,18 @@ export async function PUT(request: Request) {
       if (activeStreamId) {
         await releaseEntityLock(userId, "reading", activeStreamId);
       }
+    }
+
+    // Store free write text as memories in Mem0 (fire-and-forget)
+    if (
+      allowedFields.isFreeWrite === true &&
+      allowedFields.writingCompleted === true &&
+      allowedFields.writingText &&
+      allowedFields.writingText.trim()
+    ) {
+      addUserInputMemory(userId, allowedFields.writingText).catch((err) => {
+        console.error("Failed to add free write memory:", err);
+      });
     }
 
     return NextResponse.json(row, { status: isNew ? 201 : 200 });
