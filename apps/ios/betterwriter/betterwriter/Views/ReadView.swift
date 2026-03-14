@@ -15,9 +15,10 @@ struct ReadView: View {
   @State private var typewriter = TypewriterAnimator()
   @State private var streamComplete = false
   @State private var draftSaveTask: Task<Void, Never>?
+  /// Direct reference to the managed entry — avoids @Query async timing issues.
+  @State private var localEntry: DayEntry?
 
   private var profile: UserProfile? { profiles.first }
-  private var entry: DayEntry? { entries.first { $0.dayIndex == dayIndex } }
 
   var body: some View {
     ScrollView {
@@ -33,7 +34,7 @@ struct ReadView: View {
           }
         } else if !displayedText.isEmpty {
           WQMarkdownContent(text: displayedText)
-        } else if let entry = entry, let body = entry.readingBody {
+        } else if let body = localEntry?.readingBody {
           WQMarkdownContent(text: body)
         }
 
@@ -47,7 +48,8 @@ struct ReadView: View {
       }
     }
     .task {
-      if entry?.readingBody != nil {
+      let entry = resolveEntry()
+      if entry.readingBody != nil {
         streamComplete = true
       }
       await loadReading()
@@ -58,15 +60,18 @@ struct ReadView: View {
     ) { _ in
       if errorMessage != nil {
         Task { await loadReading() }
-      } else if !streamComplete && entry?.readingBody == nil
-        && (entry?.readingBodyDraft != nil || !displayedText.isEmpty)
-      {
-        // Stream was interrupted — save current text as draft and reconnect
-        if !displayedText.isEmpty {
-          saveDraftImmediately(body: displayedText)
+      } else if !streamComplete {
+        let entry = resolveEntry()
+        if entry.readingBody == nil
+          && (entry.readingBodyDraft != nil || !displayedText.isEmpty)
+        {
+          // Stream was interrupted — save current text as draft and reconnect
+          if !displayedText.isEmpty {
+            saveDraftImmediately(body: displayedText)
+          }
+          PrefetchStore.shared.reading = .idle
+          Task { await loadReading() }
         }
-        PrefetchStore.shared.reading = .idle
-        Task { await loadReading() }
       }
     }
   }
@@ -87,12 +92,45 @@ struct ReadView: View {
     )
   }
 
+  // MARK: - Entry resolution
+
+  /// Find or create the DayEntry for this view's dayIndex.
+  /// Uses a synchronous modelContext.fetch to avoid @Query async timing issues.
+  @MainActor
+  @discardableResult
+  private func resolveEntry() -> DayEntry {
+    if let existing = localEntry { return existing }
+
+    let targetIndex = dayIndex
+    let descriptor = FetchDescriptor<DayEntry>(
+      predicate: #Predicate<DayEntry> {
+        $0.dayIndex == targetIndex
+          && $0.isFreeWrite == false
+          && $0.isBonusReading == false
+      }
+    )
+    if let fetched = try? modelContext.fetch(descriptor).first {
+      localEntry = fetched
+      return fetched
+    }
+
+    let entry = DayEntry(dayIndex: dayIndex)
+    modelContext.insert(entry)
+    do { try modelContext.save() } catch {
+      print("ReadView: save new entry failed: \(error)")
+    }
+    localEntry = entry
+    return entry
+  }
+
   // MARK: - Actions
 
   @MainActor
   private func loadReading(retried: Bool = false) async {
+    let entry = resolveEntry()
+
     // STEP 0: If we already have the FINAL reading locally, show it.
-    if let entry = entry, let body = entry.readingBody {
+    if let body = entry.readingBody {
       displayedText = body
       streamComplete = true
       isLoading = false
@@ -100,7 +138,7 @@ struct ReadView: View {
     }
 
     // STEP 1: Restore draft text immediately (no spinner).
-    if let entry = entry, let draft = entry.readingBodyDraft, !draft.isEmpty {
+    if let draft = entry.readingBodyDraft, !draft.isEmpty {
       displayedText = draft
       isLoading = false
     }
@@ -125,10 +163,7 @@ struct ReadView: View {
       switch prefetch.reading {
       case .ready(let entryResponse):
         // INSTANT: Data was pre-fetched as JSON. Save + typewriter animate.
-        saveReadingLocally(
-          body: entryResponse.readingBody ?? "",
-          dayIndex: entryResponse.dayIndex
-        )
+        saveReadingLocally(body: entryResponse.readingBody ?? "")
         if let body = entryResponse.readingBody, !body.isEmpty {
           isLoading = false
           displayedText = ""
@@ -231,13 +266,9 @@ struct ReadView: View {
 
     await typewriter.waitForCompletion()
 
-    if let response = completedEntry {
-      saveReadingLocally(
-        body: response.readingBody ?? streamedBody,
-        dayIndex: response.dayIndex
-      )
-    } else if !streamedBody.isEmpty {
-      saveReadingLocally(body: streamedBody, dayIndex: dayIndex)
+    let body = completedEntry?.readingBody ?? streamedBody
+    if !body.isEmpty {
+      saveReadingLocally(body: body)
     }
 
     streamComplete = true
@@ -251,10 +282,7 @@ struct ReadView: View {
     switch result {
     case .immediate(let event):
       if case .complete(let entryResponse, _) = event {
-        saveReadingLocally(
-          body: entryResponse.readingBody ?? "",
-          dayIndex: entryResponse.dayIndex
-        )
+        saveReadingLocally(body: entryResponse.readingBody ?? "")
         if let body = entryResponse.readingBody, !body.isEmpty {
           isLoading = false
           displayedText = ""
@@ -287,9 +315,8 @@ struct ReadView: View {
   @MainActor
   private func saveDraftImmediately(body: String) {
     guard !body.isEmpty else { return }
-    let localEntry = entry ?? DayEntry(dayIndex: dayIndex)
-    localEntry.readingBodyDraft = body
-    if entry == nil { modelContext.insert(localEntry) }
+    let entry = resolveEntry()
+    entry.readingBodyDraft = body
     do { try modelContext.save() } catch {
       print("ReadView: Failed to save draft: \(error)")
     }
@@ -297,11 +324,10 @@ struct ReadView: View {
 
   /// Save readingBody to the local SwiftData entry and clear draft.
   @MainActor
-  private func saveReadingLocally(body: String, dayIndex: Int) {
-    let localEntry = entry ?? DayEntry(dayIndex: dayIndex)
-    localEntry.readingBody = body
-    localEntry.readingBodyDraft = nil
-    if entry == nil { modelContext.insert(localEntry) }
+  private func saveReadingLocally(body: String) {
+    let entry = resolveEntry()
+    entry.readingBody = body
+    entry.readingBodyDraft = nil
     do { try modelContext.save() } catch {
       print("ReadView: Failed to save reading locally: \(error)")
     }
@@ -309,7 +335,7 @@ struct ReadView: View {
 
   @MainActor
   private func completeReading() {
-    guard let entry = entry else { return }
+    let entry = resolveEntry()
     entry.readingCompleted = true
     entry.needsSync = true
     do { try modelContext.save() } catch {
