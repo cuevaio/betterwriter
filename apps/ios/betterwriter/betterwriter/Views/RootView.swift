@@ -74,15 +74,14 @@ struct RootView: View {
       .background(WQColor.background)
     }
     .animation(.easeInOut(duration: 0.5), value: currentPhase)
-    .onAppear {
-      let profile = ensureProfile()
+    .task {
+      let profile = await ensureProfile()
       advanceState(profileOverride: profile)
     }
     // Re-evaluate whenever SwiftData queries update (profiles loads asynchronously)
     .onChange(of: profiles) {
       if currentPhase == .loading {
-        let profile = ensureProfile()
-        advanceState(profileOverride: profile)
+        advanceState()
       }
     }
     .onChange(of: scenePhase) {
@@ -114,7 +113,7 @@ struct RootView: View {
   }
 
   @discardableResult
-  private func ensureProfile() -> UserProfile {
+  private func ensureProfile() async -> UserProfile {
     // Use direct fetch instead of @Query to avoid timing race where
     // @Query hasn't picked up a just-inserted profile yet.
     let descriptor = FetchDescriptor<UserProfile>()
@@ -126,13 +125,14 @@ struct RootView: View {
     modelContext.insert(newProfile)
     try? modelContext.save()
 
-    // Authenticate with server (exchanges device UUID for JWT, creates user if needed)
-    Task {
-      do {
-        _ = try await APIClient.shared.authenticate(installDate: newProfile.installDate)
-      } catch {
-        print("Failed to authenticate with server: \(error)")
-      }
+    // Await auth so the user row exists on the server before any other API calls.
+    // Without this, the app would race ahead to reading/writing streams while the
+    // user record hasn't been created yet, causing FK constraint failures.
+    do {
+      _ = try await APIClient.shared.authenticate(
+        installDate: newProfile.installDate)
+    } catch {
+      print("Failed to authenticate with server: \(error)")
     }
 
     return newProfile

@@ -11,7 +11,7 @@ import {
   getNextFreeWriteDayIndex,
 } from "@/lib/day-index";
 import { db } from "@/lib/db";
-import { entries } from "@/lib/db/schema";
+import { entries, users } from "@/lib/db/schema";
 
 const UPDATABLE_ENTRY_FIELDS = [
   "readingCompleted",
@@ -130,6 +130,21 @@ export async function GET(request: Request) {
 export async function PUT(request: Request) {
   try {
     const userId = await requireUserId(request);
+
+    // Verify the user exists in the DB before attempting entry upsert.
+    // The JWT may reference a deleted user (e.g. after DB wipe with
+    // Keychain-persisted credentials), which would cause an FK violation.
+    const userExists = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (userExists.length === 0) {
+      // Return 401 so the iOS client's automatic retry re-authenticates
+      // (creating the user via POST /api/auth) then replays this request.
+      return NextResponse.json({ error: "User not found" }, { status: 401 });
+    }
 
     const parsed = entryUpdateSchema.safeParse(await request.json());
     if (!parsed.success) {
