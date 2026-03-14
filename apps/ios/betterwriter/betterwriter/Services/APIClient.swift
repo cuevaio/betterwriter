@@ -171,7 +171,7 @@ actor APIClient {
       // SSE stream: generation in progress
       logStream("reading SSE stream opened (202)")
       let stream = parseSSEBytes(bytes: bytes, label: "reading") {
-        eventType, data, eventId in
+        (eventType, data, eventId) -> (ReadingStreamEvent, Bool)? in
         switch eventType {
         case "start":
           return (.start(eventId: eventId), false)
@@ -263,7 +263,7 @@ actor APIClient {
     if httpResponse.statusCode == 202 {
       logStream("prompt SSE stream opened (202)")
       let stream = parseSSEBytes(bytes: bytes, label: "prompt") {
-        eventType, data, eventId in
+        (eventType, data, eventId) -> (PromptStreamEvent, Bool)? in
         switch eventType {
         case "start":
           return (.start(eventId: eventId), false)
