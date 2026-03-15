@@ -127,6 +127,9 @@ struct RootView: View {
         advanceState()
       }
     }
+    .onChange(of: entries) {
+      advanceState()
+    }
     .onChange(of: scenePhase) {
       if scenePhase == .active {
         // Re-prefetch if the calendar day has advanced since last prefetch
