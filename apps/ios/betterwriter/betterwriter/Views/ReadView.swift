@@ -1,7 +1,9 @@
+import Inject
 import SwiftData
 import SwiftUI
 
 struct ReadView: View {
+  @ObserveInjection var inject
   let dayIndex: Int
   let onComplete: () -> Void
 
@@ -74,6 +76,7 @@ struct ReadView: View {
         }
       }
     }
+    .enableInjection()
   }
 
   // MARK: - Subviews

@@ -1,8 +1,10 @@
+import Inject
 import SwiftUI
 
 /// Shared markdown content renderer with consistent styling.
 /// Replaces the duplicated inline `markdownContent(text:)` across ReadView and BonusReadView.
 struct WQMarkdownContent: View {
+  @ObserveInjection var inject
   let text: String
 
   /// Matches the trailing link appended by the server:
@@ -43,6 +45,7 @@ struct WQMarkdownContent: View {
         bodyText(text)
       }
     }
+    .enableInjection()
   }
 
   private func bodyText(_ content: String) -> some View {

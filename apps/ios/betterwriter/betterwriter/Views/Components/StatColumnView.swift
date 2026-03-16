@@ -1,8 +1,10 @@
+import Inject
 import SwiftUI
 
 /// Reusable stat column showing a numeric value and label.
 /// Used in DoneView's inline stats section.
 struct StatColumnView: View {
+  @ObserveInjection var inject
   let value: String
   let label: String
 
@@ -18,5 +20,6 @@ struct StatColumnView: View {
     }
     .frame(maxWidth: .infinity)
     .accessibilityElement(children: .combine)
+    .enableInjection()
   }
 }

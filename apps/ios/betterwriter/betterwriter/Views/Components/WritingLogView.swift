@@ -1,6 +1,8 @@
+import Inject
 import SwiftUI
 
 struct WritingLogView: View {
+  @ObserveInjection var inject
   let entries: [DayEntry]
 
   @State private var selectedEntry: DayEntry?
@@ -70,5 +72,6 @@ struct WritingLogView: View {
         .wqSheetToolbar { selectedEntry = nil }
       }
     }
+    .enableInjection()
   }
 }

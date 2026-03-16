@@ -1,8 +1,10 @@
+import Inject
 import SwiftUI
 
 /// Shared loading indicator with caption text.
 /// Replaces the duplicated inline `loadingView` across ReadView, BonusReadView, and WriteView.
 struct WQLoadingView: View {
+  @ObserveInjection var inject
   var caption: String = "Loading..."
 
   @State private var isPulsing = false
@@ -25,5 +27,6 @@ struct WQLoadingView: View {
     }
     .frame(maxWidth: .infinity)
     .frame(maxHeight: .infinity)
+    .enableInjection()
   }
 }

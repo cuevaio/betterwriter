@@ -1,6 +1,8 @@
+import Inject
 import SwiftUI
 
 struct ReadingLogView: View {
+  @ObserveInjection var inject
   let entries: [DayEntry]
 
   @State private var selectedEntry: DayEntry?
@@ -60,6 +62,7 @@ struct ReadingLogView: View {
         .wqSheetToolbar { selectedEntry = nil }
       }
     }
+    .enableInjection()
   }
 
   /// Extract the display title from the first **bold** line of readingBody.

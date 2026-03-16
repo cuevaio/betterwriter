@@ -1,3 +1,4 @@
+import Inject
 import SwiftUI
 
 /// GitHub-style activity contribution chart.
@@ -9,6 +10,7 @@ import SwiftUI
 ///     to `compactCellSize` so the chart stays small. Used in DoneView.
 ///   - compactCellSize: Cell size (pt) when `compact` is true. Default 7.
 struct ActivityChartView: View {
+  @ObserveInjection var inject
   let entries: [DayEntry]
   var compact: Bool = false
   var compactCellSize: CGFloat = 7
@@ -87,60 +89,63 @@ struct ActivityChartView: View {
   }
 
   var body: some View {
-    if compact {
-      GeometryReader { geo in
-        let availableWidth = geo.size.width
-        let weeksToShow = max(
-          1,
-          Int(
-            (availableWidth + cellSpacing)
-              / (compactCellSize + cellSpacing)))
-        let grid = buildGrid(weeksToShow: weeksToShow)
-        let lookup = wordsByDate
+    Group {
+      if compact {
+        GeometryReader { geo in
+          let availableWidth = geo.size.width
+          let weeksToShow = max(
+            1,
+            Int(
+              (availableWidth + cellSpacing)
+                / (compactCellSize + cellSpacing)))
+          let grid = buildGrid(weeksToShow: weeksToShow)
+          let lookup = wordsByDate
 
-        ActivityChartGrid(
-          grid: grid,
-          lookup: lookup,
-          labels: [],
-          cellSize: compactCellSize,
-          cellSpacing: cellSpacing,
-          dayLabelWidth: 0,
-          gridWidth: availableWidth,
-          showLabels: false
-        )
-      }
-      .frame(height: compactChartHeight)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(accessibilitySummary)
-    } else {
-      GeometryReader { geo in
-        let availableWidth = geo.size.width
-        let gridWidth = availableWidth - dayLabelWidth - cellSpacing
-        let minCellSize: CGFloat = 10
-        let weeksToShow = max(
-          1, Int(gridWidth / (minCellSize + cellSpacing)))
-        let cellSize =
-          (gridWidth - CGFloat(weeksToShow - 1) * cellSpacing)
-          / CGFloat(weeksToShow)
-        let grid = buildGrid(weeksToShow: weeksToShow)
-        let lookup = wordsByDate
-        let labels = monthLabels(for: grid)
+          ActivityChartGrid(
+            grid: grid,
+            lookup: lookup,
+            labels: [],
+            cellSize: compactCellSize,
+            cellSpacing: cellSpacing,
+            dayLabelWidth: 0,
+            gridWidth: availableWidth,
+            showLabels: false
+          )
+        }
+        .frame(height: compactChartHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+      } else {
+        GeometryReader { geo in
+          let availableWidth = geo.size.width
+          let gridWidth = availableWidth - dayLabelWidth - cellSpacing
+          let minCellSize: CGFloat = 10
+          let weeksToShow = max(
+            1, Int(gridWidth / (minCellSize + cellSpacing)))
+          let cellSize =
+            (gridWidth - CGFloat(weeksToShow - 1) * cellSpacing)
+            / CGFloat(weeksToShow)
+          let grid = buildGrid(weeksToShow: weeksToShow)
+          let lookup = wordsByDate
+          let labels = monthLabels(for: grid)
 
-        ActivityChartGrid(
-          grid: grid,
-          lookup: lookup,
-          labels: labels,
-          cellSize: cellSize,
-          cellSpacing: cellSpacing,
-          dayLabelWidth: dayLabelWidth,
-          gridWidth: gridWidth,
-          showLabels: true
-        )
+          ActivityChartGrid(
+            grid: grid,
+            lookup: lookup,
+            labels: labels,
+            cellSize: cellSize,
+            cellSpacing: cellSpacing,
+            dayLabelWidth: dayLabelWidth,
+            gridWidth: gridWidth,
+            showLabels: true
+          )
+        }
+        .frame(height: fullChartHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
       }
-      .frame(height: fullChartHeight)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(accessibilitySummary)
     }
+    .enableInjection()
   }
 
   private var compactChartHeight: CGFloat {

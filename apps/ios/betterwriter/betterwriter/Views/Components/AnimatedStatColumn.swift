@@ -1,9 +1,11 @@
+import Inject
 import SwiftUI
 
 /// Animated stat column with SF Symbol, rolling number counter, and label.
 /// Numbers animate from 0 to target with a spring animation when `animate` flips to true.
 /// Pass `skipAnimation: true` to display the target value instantly (no count-up).
 struct AnimatedStatColumn: View {
+  @ObserveInjection var inject
   let targetValue: Int
   let label: String
   let symbolName: String
@@ -65,5 +67,6 @@ struct AnimatedStatColumn: View {
         }
       }
     }
+    .enableInjection()
   }
 }

@@ -1,7 +1,9 @@
+import Inject
 import SwiftData
 import SwiftUI
 
 struct BonusReadView: View {
+  @ObserveInjection var inject
   /// The real day index (used for the back-to-done transition).
   let dayIndex: Int
   let onBack: () -> Void
@@ -77,6 +79,7 @@ struct BonusReadView: View {
         Task { await loadBonusReading() }
       }
     }
+    .enableInjection()
   }
 
   // MARK: - Subviews

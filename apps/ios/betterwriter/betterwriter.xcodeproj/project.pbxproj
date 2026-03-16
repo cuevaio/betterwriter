@@ -10,6 +10,13 @@
 		89C10E4C2F631ACE00D36EF1 /* betterwriter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = betterwriter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXBuildFile section */
+		88EB38A953B04F419D33992C /* Inject in Frameworks */ = {
+			isa = PBXBuildFile;
+			productRef = FD114CE590AD4142BBBC3A39 /* Inject */;
+		};
+/* End PBXBuildFile section */
+
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		89C10E5A2F631AD100D36EF1 /* Exceptions for "betterwriter" folder in "betterwriter" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -36,6 +43,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				88EB38A953B04F419D33992C /* Inject in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +86,7 @@
 			);
 			name = betterwriter;
 			packageProductDependencies = (
+				FD114CE590AD4142BBBC3A39 /* Inject */,
 			);
 			productName = betterwriter;
 			productReference = 89C10E4C2F631ACE00D36EF1 /* betterwriter.app */;
@@ -111,6 +120,9 @@
 			productRefGroup = 89C10E4D2F631ACE00D36EF1 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+				527F0B059A784A0A8574B049 /* XCRemoteSwiftPackageReference "Inject" */,
+			);
 			targets = (
 				89C10E4B2F631ACE00D36EF1 /* betterwriter */,
 			);
@@ -173,6 +185,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				EMIT_FRONTEND_COMMAND_LINES = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -278,6 +291,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-Xlinker",
+					"-interposable",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = cuevaio.betterwriter;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -347,6 +365,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		527F0B059A784A0A8574B049 /* XCRemoteSwiftPackageReference "Inject" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/krzysztofzablocki/Inject.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.5.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FD114CE590AD4142BBBC3A39 /* Inject */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 527F0B059A784A0A8574B049 /* XCRemoteSwiftPackageReference "Inject" */;
+			productName = Inject;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 89C10E442F631ACE00D36EF1 /* Project object */;
 }

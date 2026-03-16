@@ -1,8 +1,10 @@
+import Inject
 import SwiftUI
 
 /// Shared error state view with optional retry action.
 /// Replaces the duplicated inline `errorView` across ReadView, BonusReadView, and WriteView.
 struct WQErrorView: View {
+  @ObserveInjection var inject
   let message: String
   var retryAction: (() -> Void)?
 
@@ -25,5 +27,6 @@ struct WQErrorView: View {
     }
     .frame(maxWidth: .infinity)
     .frame(maxHeight: .infinity)
+    .enableInjection()
   }
 }

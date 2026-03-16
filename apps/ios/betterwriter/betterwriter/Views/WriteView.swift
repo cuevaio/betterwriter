@@ -1,7 +1,9 @@
+import Inject
 import SwiftData
 import SwiftUI
 
 struct WriteView: View {
+  @ObserveInjection var inject
   let dayIndex: Int
   /// The day whose reading the user is writing about.
   let aboutDayIndex: Int
@@ -120,6 +122,7 @@ struct WriteView: View {
         saveDraft()
       }
     }
+    .enableInjection()
   }
 
   // MARK: - Actions

@@ -1,7 +1,9 @@
+import Inject
 import SwiftData
 import SwiftUI
 
 struct FreeWriteView: View {
+  @ObserveInjection var inject
   /// The real day index (used for the back-to-done transition).
   let dayIndex: Int
   let onBack: () -> Void
@@ -88,6 +90,7 @@ struct FreeWriteView: View {
         saveDraft()
       }
     }
+    .enableInjection()
   }
 
   // MARK: - Persistence

@@ -1,7 +1,9 @@
+import Inject
 import SwiftData
 import SwiftUI
 
 struct DoneView: View {
+  @ObserveInjection var inject
   let dayIndex: Int
   let shouldAnimateStats: Bool
   let onBonusRead: () -> Void
@@ -161,5 +163,6 @@ struct DoneView: View {
         .wqSheetToolbar { showWritings = false }
       }
     }
+    .enableInjection()
   }
 }

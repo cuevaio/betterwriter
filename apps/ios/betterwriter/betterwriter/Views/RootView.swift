@@ -1,7 +1,9 @@
+import Inject
 import SwiftData
 import SwiftUI
 
 struct RootView: View {
+  @ObserveInjection var inject
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.modelContext) private var modelContext
 
@@ -156,6 +158,7 @@ struct RootView: View {
         }
       }
     }
+    .enableInjection()
   }
 
   // MARK: - Loading View (wordmark removed — the safeAreaInset provides it)
