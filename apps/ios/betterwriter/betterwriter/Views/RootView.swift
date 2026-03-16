@@ -215,9 +215,21 @@ struct RootView: View {
     let effectiveProfile =
       profileOverride ?? resolvedProfile ?? profile
 
+    // Fetch entries directly from the model context to pick up
+    // mutations that @Query hasn't propagated yet (same RunLoop tick).
+    let freshEntries: [DayEntry]
+    do {
+      let descriptor = FetchDescriptor<DayEntry>(
+        sortBy: [SortDescriptor(\DayEntry.dayIndex)]
+      )
+      freshEntries = try modelContext.fetch(descriptor)
+    } catch {
+      freshEntries = Array(entries)
+    }
+
     let resolved = DayEngine.resolveCurrentPhase(
       profile: effectiveProfile,
-      entries: Array(entries)
+      entries: freshEntries
     )
     if resolved != currentPhase {
       currentPhase = resolved
