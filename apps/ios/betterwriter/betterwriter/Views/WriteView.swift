@@ -354,12 +354,12 @@ struct WriteView: View {
       do {
         _ = try await APIClient.shared.updateEntry(
           fields: [
+            "dayIndex": dayIndex,
             "writingText": userText,
             "writingWordCount": wordCount,
             "writingCompleted": true,
           ]
         )
-        _ = try await APIClient.shared.sendUserInput(text: userText)
       } catch {
         print("WriteView: Failed to sync writing: \(error)")
       }

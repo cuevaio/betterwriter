@@ -30,8 +30,9 @@ export const syncPayloadSchema = z.object({
 });
 export type SyncPayload = z.infer<typeof syncPayloadSchema>;
 
-/** PUT /api/entries payload — no dayIndex; server resolves target from context */
+/** PUT /api/entries payload — optional dayIndex; server resolves from context when omitted */
 export const entryUpdateSchema = z.object({
+  dayIndex: z.number().int().min(0).optional(),
   readingCompleted: z.boolean().optional(),
   writingPrompt: z.string().optional(),
   writingText: z.string().optional(),

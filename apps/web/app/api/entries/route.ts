@@ -156,8 +156,9 @@ export async function PUT(request: Request) {
     }
     const updates = parsed.data;
 
-    // Server determines which entry to target
-    const dayIndex = await resolveTargetDayIndex(userId, updates);
+    // Use client-provided dayIndex when present; fall back to server resolution
+    const dayIndex =
+      updates.dayIndex ?? (await resolveTargetDayIndex(userId, updates));
 
     const allowedFields = pickDefined(updates, UPDATABLE_ENTRY_FIELDS);
 
@@ -194,15 +195,14 @@ export async function PUT(request: Request) {
       }
     }
 
-    // Store free write text as memories in Mem0 (fire-and-forget)
+    // Store writing text as memories in Mem0 (fire-and-forget)
     if (
-      allowedFields.isFreeWrite === true &&
       allowedFields.writingCompleted === true &&
       allowedFields.writingText &&
       allowedFields.writingText.trim()
     ) {
       addUserInputMemory(userId, allowedFields.writingText).catch((err) => {
-        console.error("Failed to add free write memory:", err);
+        console.error("Failed to add write memory:", err);
       });
     }
 

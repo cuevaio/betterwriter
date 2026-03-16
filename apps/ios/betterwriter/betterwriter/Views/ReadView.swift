@@ -350,7 +350,10 @@ struct ReadView: View {
     Task {
       do {
         _ = try await APIClient.shared.updateEntry(
-          fields: ["readingCompleted": true]
+          fields: [
+            "dayIndex": dayIndex,
+            "readingCompleted": true,
+          ]
         )
       } catch {
         print("ReadView: Failed to sync reading completion: \(error)")
