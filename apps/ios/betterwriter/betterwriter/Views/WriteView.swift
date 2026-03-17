@@ -106,10 +106,6 @@ struct WriteView: View {
       }
       .padding(.horizontal, Spacing.contentHorizontal)
       .padding(.bottom, Spacing.l)
-      .background(
-        WQColor.background.opacity(0.9)
-          .background(.ultraThinMaterial)
-      )
     }
     .task {
       await loadPromptAndDraft()
