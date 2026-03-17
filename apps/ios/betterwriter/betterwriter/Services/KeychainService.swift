@@ -12,7 +12,21 @@ enum KeychainService {
   // MARK: - Device ID
 
   /// Get existing device ID or create a new one.
+  /// In DEBUG builds, set the `DEBUG_DEVICE_ID` environment variable in the
+  /// Xcode scheme to force a specific UUID (useful for testing against
+  /// an existing server account).
   nonisolated static func getOrCreateDeviceId() -> UUID {
+    #if DEBUG
+      if let override = ProcessInfo.processInfo
+        .environment["DEBUG_DEVICE_ID"],
+        let uuid = UUID(uuidString: override)
+      {
+        // Persist so the rest of the app (and re-launches) stay consistent.
+        saveDeviceId(uuid)
+        deleteAuthToken()  // force re-auth with the new identity
+        return uuid
+      }
+    #endif
     if let existing = getDeviceId() {
       return existing
     }

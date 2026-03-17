@@ -62,26 +62,76 @@ async function getPastReadingUrls(userId: string): Promise<Set<string>> {
   return extractUrlsFromReadings(bodies);
 }
 
+const QUERY_SUFFIXES = [
+  "essay interesting perspective thought-provoking",
+  "deep dive analysis opinion",
+  "insights lessons learned reflection",
+  "story narrative personal experience",
+  "research findings surprising facts",
+];
+
 async function pickExaSource(
   topic: string,
   excludeUrls: Set<string>
 ): Promise<ExaPickedSource> {
-  const query = `${topic} essay interesting perspective thought-provoking`;
-  const results = await searchExa(query, { numResults: 5 });
+  const maxRetries = QUERY_SUFFIXES.length;
 
-  const usable = results.filter(
-    (r) => r.text && r.text.length >= 500 && !excludeUrls.has(r.url)
+  console.log(
+    `[pickExaSource] topic="${topic}", excludeUrls=${excludeUrls.size}`
   );
-  if (usable.length === 0) {
-    throw new Error("No usable Exa results");
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const suffix = QUERY_SUFFIXES[attempt];
+    const query = `${topic} ${suffix}`;
+    const numResults = 5 + attempt * 5; // 5, 10, 15, 20, 25
+
+    console.log(
+      `[pickExaSource] attempt ${attempt + 1}/${maxRetries}: query="${query}", numResults=${numResults}`
+    );
+
+    const results = await searchExa(query, { numResults });
+
+    const tooShort = results.filter(
+      (r) => !r.text || r.text.length < 500
+    ).length;
+    const excluded = results.filter(
+      (r) => r.text && r.text.length >= 500 && excludeUrls.has(r.url)
+    ).length;
+    const usable = results.filter(
+      (r) => r.text && r.text.length >= 500 && !excludeUrls.has(r.url)
+    );
+
+    console.log(
+      `[pickExaSource] attempt ${attempt + 1}/${maxRetries}: ${results.length} raw results, ${tooShort} too short, ${excluded} excluded (already read), ${usable.length} usable`
+    );
+
+    if (usable.length > 0) {
+      const pick = usable[Math.floor(Math.random() * usable.length)];
+      console.log(
+        `[pickExaSource] picked: "${pick.title}" (${pick.text?.length ?? 0} chars) ${pick.url}`
+      );
+      return {
+        title: pick.title,
+        text: pick.text ?? "",
+        url: pick.url,
+      };
+    }
+
+    // Log which URLs were excluded for debugging
+    if (excluded > 0) {
+      const excludedUrls = results
+        .filter((r) => r.text && r.text.length >= 500 && excludeUrls.has(r.url))
+        .map((r) => r.url);
+      console.log(`[pickExaSource] excluded URLs: ${excludedUrls.join(", ")}`);
+    }
   }
 
-  const pick = usable[Math.floor(Math.random() * usable.length)];
-  return {
-    title: pick.title,
-    text: pick.text ?? "",
-    url: pick.url,
-  };
+  console.error(
+    `[pickExaSource] FAILED after ${maxRetries} attempts for topic: "${topic}"`
+  );
+  throw new Error(
+    `No usable Exa results after ${maxRetries} attempts for topic: ${topic}`
+  );
 }
 
 /**
@@ -113,11 +163,15 @@ export async function generateReadingStream(
   const { min, max } = getWordCountRange(weekDayIndex ?? dayIndex);
 
   // Use memory context to determine a good topic
+  console.log(`[generateReadingStream] userId=${userId}, dayIndex=${dayIndex}`);
   const memoryContext = await retrieveMemoryContext(
     userId,
     "What topics and interests does this user care about? What would they want to read?"
   );
   const topic = memoryContext.trim() || "interesting ideas and perspectives";
+  console.log(
+    `[generateReadingStream] topic="${topic.slice(0, 200)}${topic.length > 200 ? "..." : ""}"`
+  );
 
   let sourceURL: string | null = null;
   let sourceTitle: string | null = null;
@@ -125,16 +179,26 @@ export async function generateReadingStream(
 
   try {
     const pastUrls = await getPastReadingUrls(userId);
+    console.log(
+      `[generateReadingStream] ${pastUrls.size} past reading URLs to exclude`
+    );
     const picked = await pickExaSource(topic, pastUrls);
     sourceURL = picked.url;
     sourceTitle = picked.title;
     sourceText = picked.text;
+    console.log(
+      `[generateReadingStream] Exa source: "${sourceTitle}" (${sourceText?.length ?? 0} chars)`
+    );
   } catch (error) {
     console.error(
-      "Reading stream: Exa source lookup failed, using original generation",
-      error
+      "[generateReadingStream] Exa source lookup failed, using AI-only generation:",
+      error instanceof Error ? error.message : error
     );
   }
+
+  console.log(
+    `[generateReadingStream] mode=${sourceText ? "curated" : "original"}, wordRange=${min}-${max}`
+  );
 
   const streamPrompt = sourceText
     ? `Topic: ${topic}

@@ -1,6 +1,9 @@
 import Inject
+import OSLog
 import SwiftData
 import SwiftUI
+
+private let logger = Logger(subsystem: "com.betterwriter", category: "WriteView")
 
 struct WriteView: View {
   @ObserveInjection var inject
@@ -305,15 +308,22 @@ struct WriteView: View {
 
   @MainActor
   private func completeWriting() {
+    logger.info("completeWriting: START dayIndex=\(dayIndex) wordCount=\(wordCount)")
     draftSaveTask?.cancel()
     let entry = resolveEntry()
+    logger.info(
+      "completeWriting: entry resolved, dayIndex=\(entry.dayIndex) readingCompleted=\(entry.readingCompleted) writingCompleted=\(entry.writingCompleted)"
+    )
 
     entry.writingText = userText
     entry.writingWordCount = wordCount
     entry.writingCompleted = true
     entry.needsSync = true
-    do { try modelContext.save() } catch {
-      print("WriteView: completeWriting save failed: \(error)")
+    do {
+      try modelContext.save()
+      logger.info("completeWriting: saved writingCompleted=true for dayIndex=\(entry.dayIndex)")
+    } catch {
+      logger.error("completeWriting: save FAILED: \(error.localizedDescription)")
     }
 
     Haptics.success()
@@ -365,6 +375,8 @@ struct WriteView: View {
       }
     }
 
+    logger.info("completeWriting: calling onComplete()")
     onComplete()
+    logger.info("completeWriting: END")
   }
 }

@@ -1,6 +1,9 @@
 import Inject
+import OSLog
 import SwiftData
 import SwiftUI
+
+private let logger = Logger(subsystem: "com.betterwriter", category: "RootView")
 
 struct RootView: View {
   @ObserveInjection var inject
@@ -223,16 +226,74 @@ struct RootView: View {
         sortBy: [SortDescriptor(\DayEntry.dayIndex)]
       )
       freshEntries = try modelContext.fetch(descriptor)
+      logger.info("advanceState: fetched \(freshEntries.count) entries from modelContext")
     } catch {
       freshEntries = Array(entries)
+      logger.error(
+        "advanceState: modelContext.fetch failed: \(error.localizedDescription), falling back to @Query (\(freshEntries.count) entries)"
+      )
+    }
+
+    // Physically merge any duplicate DayEntry objects sharing the same dayIndex.
+    // This can happen when ReadView and WriteView each create a new DayEntry
+    // for the same dayIndex (no uniqueness constraint on the model).
+    var seen: [Int: DayEntry] = [:]
+    for entry in freshEntries where !entry.isSyntheticEntry {
+      if let existing = seen[entry.dayIndex] {
+        // Merge flags into the keeper, delete the duplicate
+        if entry.readingCompleted { existing.readingCompleted = true }
+        if entry.readingBody != nil && existing.readingBody == nil {
+          existing.readingBody = entry.readingBody
+        }
+        if entry.readingBodyDraft != nil && existing.readingBodyDraft == nil {
+          existing.readingBodyDraft = entry.readingBodyDraft
+        }
+        if entry.writingCompleted { existing.writingCompleted = true }
+        if entry.writingText != nil && existing.writingText == nil {
+          existing.writingText = entry.writingText
+        }
+        if entry.writingPrompt != nil && existing.writingPrompt == nil {
+          existing.writingPrompt = entry.writingPrompt
+        }
+        existing.writingWordCount = max(
+          existing.writingWordCount, entry.writingWordCount)
+        if entry.calendarDate > existing.calendarDate {
+          existing.calendarDate = entry.calendarDate
+        }
+        existing.needsSync = true
+        modelContext.delete(entry)
+        logger.warning("advanceState: deleted duplicate entry for dayIndex=\(entry.dayIndex)")
+      } else {
+        seen[entry.dayIndex] = entry
+      }
+    }
+    if seen.values.contains(where: { $0.needsSync }) {
+      do { try modelContext.save() } catch {
+        logger.error("advanceState: failed to save after dedup: \(error.localizedDescription)")
+      }
+    }
+
+    // Log entry states for debugging
+    for e in freshEntries where !e.isSyntheticEntry {
+      logger.info(
+        "  entry[\(e.dayIndex)]: reading=\(e.readingCompleted) writing=\(e.writingCompleted) date=\(e.calendarDate.formatted(.iso8601))"
+      )
     }
 
     let resolved = DayEngine.resolveCurrentPhase(
       profile: effectiveProfile,
       entries: freshEntries
     )
+    logger.info(
+      "advanceState: current=\(String(describing: currentPhase)) resolved=\(String(describing: resolved))"
+    )
     if resolved != currentPhase {
+      logger.info(
+        "advanceState: transitioning \(String(describing: currentPhase)) -> \(String(describing: resolved))"
+      )
       currentPhase = resolved
+    } else {
+      logger.info("advanceState: no change, staying at \(String(describing: currentPhase))")
     }
   }
 }

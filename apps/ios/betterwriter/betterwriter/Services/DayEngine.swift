@@ -1,6 +1,9 @@
 import Foundation
+import OSLog
 import SwiftData
 import SwiftUI
+
+private let logger = Logger(subsystem: "com.betterwriter", category: "DayEngine")
 
 /// Resolves the current app phase based on user profile and entries.
 enum DayEngine {
@@ -13,13 +16,48 @@ enum DayEngine {
   /// - Current day = max(completed dayIndex) + 1.
   /// - If no completed entries exist, returns 0.
   static func computeCurrentDayIndex(entries: [DayEntry]) -> Int {
-    let completedNormal = entries.filter {
+    let merged = deduplicatedEntries(entries)
+    let completedNormal = merged.filter {
       !$0.isSyntheticEntry && $0.readingCompleted && $0.writingCompleted
     }
     guard let maxCompleted = completedNormal.map({ $0.dayIndex }).max() else {
       return 0
     }
     return maxCompleted + 1
+  }
+
+  /// Merge duplicate entries that share the same dayIndex by OR-ing their
+  /// completion flags and taking the latest calendarDate. This handles the
+  /// case where ReadView and WriteView each created separate DayEntry objects
+  /// for the same dayIndex.
+  private static func deduplicatedEntries(_ entries: [DayEntry]) -> [DayEntry] {
+    var seen: [Int: DayEntry] = [:]
+    for entry in entries {
+      if let existing = seen[entry.dayIndex] {
+        // Merge: keep whichever has the more complete state
+        if entry.readingCompleted && !existing.readingCompleted {
+          existing.readingCompleted = true
+          existing.readingBody = existing.readingBody ?? entry.readingBody
+          existing.readingBodyDraft = existing.readingBodyDraft ?? entry.readingBodyDraft
+        }
+        if entry.writingCompleted && !existing.writingCompleted {
+          existing.writingCompleted = true
+          existing.writingText = existing.writingText ?? entry.writingText
+          existing.writingPrompt = existing.writingPrompt ?? entry.writingPrompt
+          existing.writingWordCount = max(
+            existing.writingWordCount, entry.writingWordCount)
+        }
+        // Use the later calendar date
+        if entry.calendarDate > existing.calendarDate {
+          existing.calendarDate = entry.calendarDate
+        }
+        existing.needsSync = true
+        logger.warning("deduplicatedEntries: merged duplicate dayIndex=\(entry.dayIndex)")
+      } else {
+        seen[entry.dayIndex] = entry
+      }
+    }
+    return Array(seen.values).sorted { $0.dayIndex < $1.dayIndex }
   }
 
   /// Determine what phase the app should be in right now.
@@ -31,29 +69,39 @@ enum DayEngine {
       return .loading
     }
 
+    let entries = deduplicatedEntries(entries)
     let todayIndex = computeCurrentDayIndex(entries: entries)
+    logger.info("resolveCurrentPhase: todayIndex=\(todayIndex)")
 
     // If the user completed the previous day today, show the done view
     // before advancing to the next day's reading.
     if todayIndex > 0 {
       let prevIndex = todayIndex - 1
-      if let prevEntry = entries.first(where: { $0.dayIndex == prevIndex && !$0.isSyntheticEntry }),
-        prevEntry.readingCompleted && prevEntry.writingCompleted,
-        Calendar.current.isDateInToday(prevEntry.calendarDate)
-      {
-        // Respect in-progress bonus/freewrite sessions
-        if entries.contains(where: { $0.isBonusReading && !$0.readingCompleted }) {
-          return .bonusRead(dayIndex: prevIndex)
+      let prevEntry = entries.first(where: { $0.dayIndex == prevIndex && !$0.isSyntheticEntry })
+      if let prevEntry {
+        let isToday = Calendar.current.isDateInToday(prevEntry.calendarDate)
+        logger.info(
+          "resolveCurrentPhase: prevEntry[\(prevIndex)] reading=\(prevEntry.readingCompleted) writing=\(prevEntry.writingCompleted) date=\(prevEntry.calendarDate.formatted(.iso8601)) isToday=\(isToday)"
+        )
+        if prevEntry.readingCompleted && prevEntry.writingCompleted && isToday {
+          // Respect in-progress bonus/freewrite sessions
+          if entries.contains(where: { $0.isBonusReading && !$0.readingCompleted }) {
+            return .bonusRead(dayIndex: prevIndex)
+          }
+          if entries.contains(where: { $0.isFreeWrite && !$0.writingCompleted }) {
+            return .freeWrite(dayIndex: prevIndex)
+          }
+          logger.info("resolveCurrentPhase: -> .done(dayIndex: \(prevIndex))")
+          return .done(dayIndex: prevIndex)
         }
-        if entries.contains(where: { $0.isFreeWrite && !$0.writingCompleted }) {
-          return .freeWrite(dayIndex: prevIndex)
-        }
-        return .done(dayIndex: prevIndex)
+      } else {
+        logger.info("resolveCurrentPhase: no prevEntry for index \(prevIndex)")
       }
     }
 
     // Get or conceptually create today's entry
     let todayEntry = entries.first { $0.dayIndex == todayIndex }
+    logger.info("resolveCurrentPhase: todayEntry exists=\(todayEntry != nil)")
 
     // Step 1: Check if reading is done for today
     let readingDone = todayEntry?.readingCompleted ?? false
@@ -61,11 +109,14 @@ enum DayEngine {
     // Step 2: Determine phase
     // Priority: read first, then write, then done
     if !readingDone {
+      logger.info("resolveCurrentPhase: -> .read(dayIndex: \(todayIndex)) (reading not done)")
       return .read(dayIndex: todayIndex)
     }
 
     // Step 3: Check if today's writing is already done
     let writingDoneToday = todayEntry?.writingCompleted ?? false
+    logger.info(
+      "resolveCurrentPhase: readingDone=\(readingDone) writingDoneToday=\(writingDoneToday)")
     if writingDoneToday {
       // Check for an unread bonus entry (created by "Read something")
       if entries.contains(where: { $0.isBonusReading && !$0.readingCompleted }) {
@@ -87,6 +138,8 @@ enum DayEngine {
     )
 
     if let aboutDayIndex = writingTask {
+      logger.info(
+        "resolveCurrentPhase: -> .write(dayIndex: \(todayIndex), aboutDayIndex: \(aboutDayIndex))")
       return .write(dayIndex: todayIndex, aboutDayIndex: aboutDayIndex)
     }
 

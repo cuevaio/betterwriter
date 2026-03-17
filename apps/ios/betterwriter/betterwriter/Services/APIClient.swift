@@ -6,7 +6,22 @@ actor APIClient {
   static let shared = APIClient()
 
   #if DEBUG
-    private let baseURL = "http://localhost:3000"
+    private let baseURL: String = {
+      // Physical devices can't reach "localhost" (that's the phone itself).
+      // Set DEBUG_BASE_URL in the Xcode scheme env vars to your Mac's address,
+      // e.g. "http://The-Cave.local:3000" or "http://192.168.2.23:3000".
+      // Falls back to localhost for the simulator.
+      if let override = ProcessInfo.processInfo
+        .environment["DEBUG_BASE_URL"]
+      {
+        return override
+      }
+      #if targetEnvironment(simulator)
+        return "http://localhost:3000"
+      #else
+        return "http://localhost:3000"
+      #endif
+    }()
   #else
     private let baseURL = "https://betterwriter.vercel.app"
   #endif
