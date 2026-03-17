@@ -101,16 +101,6 @@ struct RootView: View {
           .move(edge: .bottom).combined(with: .opacity))
       }
     }
-    .safeAreaInset(edge: .top) {
-      HStack {
-        Spacer()
-        BrandWordmarkView()
-        Spacer()
-      }
-      .padding(.top, Spacing.s)
-      .padding(.bottom, Spacing.xs)
-      .background(WQColor.background)
-    }
     .animation(
       .spring(response: 0.5, dampingFraction: 0.85),
       value: currentPhase

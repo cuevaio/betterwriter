@@ -25,7 +25,7 @@ struct ReadView: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: Spacing.xl) {
-        Spacer(minLength: Spacing.xxl)
+        Spacer(minLength: Spacing.l)
 
         if isLoading && displayedText.isEmpty {
           WQLoadingView(
@@ -40,14 +40,14 @@ struct ReadView: View {
           WQMarkdownContent(text: body)
         }
 
-        Spacer(minLength: Spacing.xxxl)
+        if !isLoading && errorMessage == nil && streamComplete {
+          doneButton
+            .padding(.top, Spacing.m)
+        }
+
+        Spacer(minLength: Spacing.l)
       }
       .padding(.horizontal, Spacing.readingHorizontal)
-    }
-    .safeAreaInset(edge: .bottom) {
-      if !isLoading && errorMessage == nil && streamComplete {
-        doneButton
-      }
     }
     .task {
       let entry = resolveEntry()
@@ -87,12 +87,6 @@ struct ReadView: View {
     }
     .buttonStyle(WQOutlinedButtonStyle(isFilled: true))
     .accessibilityHint("Mark today's reading as complete")
-    .padding(.horizontal, Spacing.contentHorizontal)
-    .padding(.bottom, Spacing.l)
-    .background(
-      WQColor.background.opacity(0.9)
-        .background(.ultraThinMaterial)
-    )
   }
 
   // MARK: - Entry resolution

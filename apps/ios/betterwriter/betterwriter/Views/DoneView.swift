@@ -126,6 +126,10 @@ struct DoneView: View {
           }
         }
         .padding(.bottom, Spacing.xxl)
+
+        // Brand wordmark
+        BrandWordmarkView()
+          .padding(.bottom, Spacing.l)
       }
     }
     .onAppear {
