@@ -332,15 +332,6 @@ struct WriteView: View {
         profile.onboardingDay0Done = true
       } else if dayIndex == 1 {
         profile.onboardingDay1Done = true
-
-        Task {
-          let granted =
-            await NotificationService.requestAuthorization()
-          if granted {
-            NotificationService.scheduleDailyReminder(
-              dayIndex: dayIndex)
-          }
-        }
       }
 
       let streak = DayEngine.calculateStreak(

@@ -341,6 +341,17 @@ struct ReadView: View {
 
     Haptics.medium()
 
+    // After the very first lecture, ask for notification permission and
+    // schedule all four daily reminders.
+    if dayIndex == 0 {
+      Task {
+        let granted = await NotificationService.requestAuthorization()
+        if granted {
+          NotificationService.scheduleAllReminders(dayIndex: dayIndex)
+        }
+      }
+    }
+
     Task {
       do {
         _ = try await APIClient.shared.updateEntry(
